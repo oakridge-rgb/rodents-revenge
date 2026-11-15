@@ -1,5 +1,5 @@
 # 🐭 Rodent's Revenge — faithful web & Android port
-
+Just like all great android ports, it's made with help by ai, specifically GLM 5.3 agent mode
 A port of the 1991 Microsoft Windows game **Rodent's Revenge** (designed by
 Christopher Lee Fraley) to modern browsers and Android, rebuilt to preserve the
 original's mechanics, level structure, presentation and feel — not to
