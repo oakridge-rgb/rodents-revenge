@@ -1,0 +1,164 @@
+/* Rodent's Revenge — Android PWA edition */
+:root {
+  --bg: #0a0a0f;
+  --panel: #12121c;
+  --ink: #e8e6df;
+  --muted: #8a88a0;
+  --accent: #ffce3a;
+  --accent2: #e8853d;
+  --good: #6fce6f;
+}
+* { margin: 0; padding: 0; box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { height: 100%; }
+body {
+  background: var(--bg);
+  color: var(--ink);
+  font-family: ui-monospace, 'Cascadia Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
+  display: flex; justify-content: center;
+  overflow: hidden;
+  touch-action: manipulation;
+  user-select: none; -webkit-user-select: none;
+}
+#app {
+  width: 100%; max-width: 860px;
+  height: 100%;
+  display: flex; flex-direction: column;
+  padding: max(6px, env(safe-area-inset-top)) 10px max(6px, env(safe-area-inset-bottom));
+  gap: 6px;
+}
+
+/* ---------- HUD ---------- */
+#hud {
+  display: flex; justify-content: space-between; align-items: center;
+  background: var(--panel); border: 1px solid #23232f; border-radius: 10px;
+  padding: 6px 12px;
+}
+.hud-item { display: flex; flex-direction: column; align-items: center; min-width: 64px; }
+.hud-label { font-size: 9px; letter-spacing: 2px; color: var(--muted); }
+.hud-item span:last-child { font-size: 16px; font-weight: 700; color: var(--accent); }
+.hud-lives { font-size: 15px; letter-spacing: 3px; color: #cfd4dc; }
+.hud-lives .dead { opacity: 0.22; }
+.hud-right .hud-item span:last-child { color: var(--ink); }
+
+#clockbar {
+  height: 5px; background: #1b1b28; border-radius: 3px; overflow: hidden;
+}
+#clockfill {
+  height: 100%; width: 0%;
+  background: linear-gradient(90deg, #2b6cb0, #63b3ed);
+  transition: width 0.3s linear;
+}
+
+/* ---------- Stage ---------- */
+#stage { position: relative; flex: 1; display: flex; align-items: center; justify-content: center; min-height: 0; }
+#game {
+  background: #10101a;
+  border: 2px solid #23232f; border-radius: 10px;
+  width: 100%; height: auto; max-height: 100%;
+  object-fit: contain;
+  image-rendering: pixelated;
+  touch-action: none;
+}
+
+/* ---------- Overlays ---------- */
+.overlay {
+  position: absolute; inset: 0;
+  display: flex; align-items: center; justify-content: center;
+  background: rgba(5, 5, 10, 0.86);
+  border-radius: 10px;
+  overflow: auto;
+}
+.overlay.hidden { display: none; }
+.screen { text-align: center; padding: 18px; max-width: 560px; }
+.screen.hidden { display: none; }
+
+.logo { line-height: 1; margin-bottom: 10px; letter-spacing: 1px; }
+.logo-r { display: block; font-size: clamp(26px, 6vw, 44px); color: #cfd4dc; font-weight: 900; }
+.logo-b { display: block; font-size: clamp(34px, 8vw, 60px); color: var(--accent); font-weight: 900; text-shadow: 3px 3px 0 #7a3d12; }
+.tagline { color: var(--muted); font-size: 13px; margin-bottom: 16px; }
+
+.lvl-select { display: flex; align-items: center; justify-content: center; gap: 14px; margin-bottom: 14px; }
+.lvl-num { font-size: 12px; letter-spacing: 2px; color: var(--muted); }
+.lvl-num span { color: var(--accent); font-size: 18px; font-weight: 800; }
+.lvl-btn {
+  width: 40px; height: 40px; border-radius: 10px;
+  background: var(--panel); border: 1px solid #2c2c3c; color: var(--ink);
+  font-size: 20px; font-weight: 700; cursor: pointer;
+}
+.lvl-btn:active { background: #232334; }
+
+.big-btn {
+  display: inline-block; padding: 13px 44px;
+  font: inherit; font-size: 18px; font-weight: 800; letter-spacing: 2px;
+  color: #1a1200; background: var(--accent);
+  border: none; border-radius: 12px; cursor: pointer;
+  box-shadow: 0 4px 0 #a97e17;
+}
+.big-btn:active { transform: translateY(3px); box-shadow: 0 1px 0 #a97e17; }
+.link-btn {
+  display: block; margin: 14px auto 0; background: none; border: none;
+  color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; text-decoration: underline;
+}
+.howto {
+  margin-top: 18px; text-align: left;
+  background: var(--panel); border: 1px solid #23232f; border-radius: 10px;
+  padding: 12px 14px; font-size: 11.5px; line-height: 1.55; color: #b9b7c9;
+}
+.howto b { color: var(--accent); }
+.credit { margin-top: 14px; font-size: 9.5px; color: #55536b; }
+
+.clear-title { font-size: clamp(28px, 6vw, 44px); color: var(--good); text-shadow: 2px 2px 0 #1e3a1e; }
+.clear-bonus { font-size: 22px; color: var(--accent); margin-top: 10px; font-weight: 800; }
+.over-title { font-size: clamp(28px, 6vw, 44px); color: #ef5f5f; text-shadow: 2px 2px 0 #3a1414; }
+.over-score { margin-top: 12px; font-size: 20px; color: var(--ink); font-weight: 700; }
+.over-best { margin: 6px 0 16px; font-size: 12px; color: var(--muted); letter-spacing: 2px; }
+.pause-title { font-size: clamp(26px, 5vw, 38px); color: var(--ink); letter-spacing: 4px; margin-bottom: 8px; }
+
+/* ---------- Toolbar ---------- */
+#toolbar { display: flex; align-items: center; gap: 8px; }
+.tool-btn {
+  width: 38px; height: 34px; border-radius: 8px;
+  background: var(--panel); border: 1px solid #23232f;
+  color: var(--ink); font-size: 15px; cursor: pointer;
+}
+.tool-btn:active { background: #232334; }
+#modeNote { font-size: 9px; color: #55536b; margin-left: auto; letter-spacing: 1px; }
+
+/* ---------- D-pad ---------- */
+.dpad {
+  display: none;
+  grid-template-columns: repeat(3, 64px);
+  grid-template-rows: repeat(2, 56px);
+  gap: 6px; justify-content: center;
+  padding-bottom: 2px;
+}
+body.touch .dpad { display: grid; }
+.pad-btn {
+  border-radius: 12px; border: 1px solid #2c2c3c;
+  background: var(--panel); color: var(--ink);
+  font-size: 18px; cursor: pointer;
+}
+.pad-btn:active { background: #2b2b40; color: var(--accent); }
+.pad-up { grid-column: 2; grid-row: 1; }
+.pad-left { grid-column: 1; grid-row: 2; }
+.pad-down { grid-column: 2; grid-row: 2; }
+.pad-right { grid-column: 3; grid-row: 2; }
+
+#foot { text-align: center; font-size: 9.5px; color: #55536b; }
+body.touch #foot { display: none; }
+
+/* Landscape phones: pad to the side */
+@media (orientation: landscape) and (pointer: coarse) {
+  #app { flex-direction: row; flex-wrap: wrap; align-content: flex-start; }
+  #hud { flex: 1 1 100%; }
+  #clockbar { flex: 1 1 100%; }
+  #stage { flex: 1 1 62%; }
+  #side-wrap { display: none; }
+  #toolbar { order: 3; }
+  .dpad {
+    order: 4; flex: 1 1 34%;
+    align-self: center;
+    padding: 0;
+  }
+  #foot { display: none; }
+}

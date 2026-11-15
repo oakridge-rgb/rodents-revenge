@@ -1,0 +1,107 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+<meta name="theme-color" content="#0a0a0a">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="description" content="Rodent's Revenge for Android — a faithful fan reimplementation of the 1991 Microsoft Windows classic. Trap the cats, eat the cheese.">
+<title>Rodent's Revenge</title>
+<link rel="manifest" href="./manifest.webmanifest">
+<link rel="icon" href="./icons/icon-192.png">
+<link rel="apple-touch-icon" href="./icons/icon-192.png">
+<link rel="stylesheet" href="./style.css">
+</head>
+<body>
+<div id="app">
+
+  <header id="hud">
+    <div class="hud-left">
+      <div class="hud-item"><span class="hud-label">SCORE</span><span id="hudScore">0</span></div>
+      <div class="hud-item"><span class="hud-label">LEVEL</span><span id="hudLevel">1</span></div>
+    </div>
+    <div id="hudLives" class="hud-lives" title="Lives"></div>
+    <div class="hud-right">
+      <div class="hud-item"><span class="hud-label">CATS</span><span id="hudCats">0</span></div>
+      <div class="hud-item"><span class="hud-label">BEST</span><span id="hudBest">0</span></div>
+    </div>
+  </header>
+
+  <div id="clockbar"><div id="clockfill"></div></div>
+
+  <div id="stage">
+    <canvas id="game" width="768" height="512" aria-label="Rodent's Revenge game board"></canvas>
+
+    <div id="overlay" class="overlay">
+      <!-- TITLE -->
+      <div id="scrTitle" class="screen">
+        <h1 class="logo"><span class="logo-r">RODENT'S</span><span class="logo-b">REVENGE</span></h1>
+        <p class="tagline">Trap every cat. Eat the cheese. Survive.</p>
+        <div class="lvl-select">
+          <button id="lvlMinus" class="lvl-btn" aria-label="Start level down">−</button>
+          <div class="lvl-num">START LEVEL <span id="lvlValue">1</span></div>
+          <button id="lvlPlus" class="lvl-btn" aria-label="Start level up">+</button>
+        </div>
+        <button id="btnStart" class="big-btn">▶ &nbsp;PLAY</button>
+        <div class="howto">
+          <b>GOAL</b> — push the crates to wall every cat in on all four sides. A fully
+          boxed cat turns into cheese. Walk over cheese to eat it. When the last cat is
+          boxed, the level is yours.
+          <br><br>
+          <b>DANGER</b> — cats chase you. Sink holes trap you for 3 seconds. Mouse traps
+          snap. Yarn balls fly. Three lives, that's it.
+        </div>
+        <p class="credit">A fan reimplementation of the 1991 Windows classic by Christopher Lee Fraley</p>
+      </div>
+
+      <!-- LEVEL CLEAR -->
+      <div id="scrClear" class="screen hidden">
+        <h2 class="clear-title">LEVEL CLEAR!</h2>
+        <p id="clearBonus" class="clear-bonus">+1000</p>
+      </div>
+
+      <!-- GAME OVER -->
+      <div id="scrOver" class="screen hidden">
+        <h2 class="over-title">GAME OVER</h2>
+        <p class="over-score">SCORE <span id="overScore">0</span></p>
+        <p id="overBest" class="over-best">BEST 0</p>
+        <button id="btnRetry" class="big-btn">↻ &nbsp;TRY AGAIN</button>
+        <button id="btnMenu" class="link-btn">Back to title</button>
+      </div>
+
+      <!-- PAUSED -->
+      <div id="scrPause" class="screen hidden">
+        <h2 class="pause-title">PAUSED</h2>
+        <button id="btnResume" class="big-btn">▶ &nbsp;RESUME</button>
+        <button id="btnQuit" class="link-btn">Quit to title</button>
+      </div>
+    </div>
+  </div>
+
+  <div id="toolbar">
+    <button id="btnPause" class="tool-btn" aria-label="Pause">⏸</button>
+    <button id="btnMute" class="tool-btn" aria-label="Mute">🔊</button>
+    <button id="btnRestart" class="tool-btn" aria-label="Restart level">↻</button>
+    <span id="modeNote"></span>
+  </div>
+
+  <div id="dpad" class="dpad">
+    <button class="pad-btn pad-up" data-dir="up" aria-label="Up">▲</button>
+    <button class="pad-btn pad-left" data-dir="left" aria-label="Left">◀</button>
+    <button class="pad-btn pad-right" data-dir="right" aria-label="Right">▶</button>
+    <button class="pad-btn pad-down" data-dir="down" aria-label="Down">▼</button>
+  </div>
+
+  <footer id="foot">Swipe the board or use the pad &nbsp;·&nbsp; Keyboard: arrows / WASD, P pause, M mute</footer>
+</div>
+
+<script src="./game.js"></script>
+<script>
+if ('serviceWorker' in navigator) {
+  window.addEventListener('load', () => navigator.serviceWorker.register('./sw.js').catch(() => {}));
+}
+</script>
+</body>
+</html>
