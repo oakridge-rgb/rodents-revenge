@@ -1,754 +1,751 @@
 /* ============================================================
-   RODENT'S REVENGE — fan reimplementation for Android (PWA)
-   Original 1991 Windows game by Christopher Lee Fraley (Microsoft).
-   This is a from-scratch tribute: no original code or assets.
+   RODENT'S REVENGE — faithful web/Android port
+   Reconstructed from study of the 1991 Microsoft Windows game.
+   Mechanics cross-verified against two independent reverse-
+   engineered remakes (matthewcpp/RodentsRevenge C89 and
+   endemic/revenge JS) and original gameplay footage.
+   See docs/COMPARISON.md and FAITHFULNESS.md.
    ============================================================ */
 'use strict';
 
-/* ---------- Constants ---------- */
-const COLS = 24, ROWS = 16, CELL = 32;
-const W = COLS * CELL, H = ROWS * CELL;
+/* ---------- Board constants (original: 23x23 tiles) ---------- */
+const N = 23, TILE = 36, W = N * TILE, H = N * TILE;
 
-const EMPTY = 0, WALL = 1, BLOCK = 2, HOLE = 3, TRAP = 4;
+/* Windows 16-colour VGA palette, as used by the original */
+const PAL = {
+  olive:  '#808000', teal:  '#008080', cyan:  '#00ffff', silver: '#c0c0c0',
+  gray:   '#808080', green: '#008000', lime:  '#00ff00', yellow: '#ffff00',
+  white:  '#ffffff', black: '#000000', blue:  '#0000ff', red:    '#ff0000',
+  navy:   '#000080', maroon:'#800000'
+};
 
-const State = { TITLE: 0, PLAYING: 1, CLEAR: 2, DYING: 3, OVER: 4, PAUSED: 5 };
+/* Grid cell types (mirrors the original's entity-in-grid model) */
+const T = { EMPTY: 0, WALL: 1, BLOCK: 2, CHEESE: 3, HOLE: 4, TRAP: 5, CAT: 6, MOUSE: 7, YARN: 8 };
 
-const idx = (x, y) => y * COLS + x;
-const inB = (x, y) => x >= 0 && x < COLS && y >= 0 && y < ROWS;
+/* Original timing constants (ms) — from the reference engine */
+const CAT_TICK          = 1000;   // enemy update frequency
+const HOLE_STUCK_TIME   = 10000;  // sink hole
+const YARN_WAIT_MIN     = 1000;   // yarn idle after spawning
+const YARN_WAIT_MAX     = 5000;
+const YARN_MOVE_TIME    = 100;    // yarn speed
+const CLOCK_SECOND      = 1000;   // stopwatch: one position per second
+const CLOCK_POSITIONS   = 30;     // positions on the dial
+const WIND_SPEED        = 100;    // clock winds at 100x after a round clear
+const DEATH_FRAMES      = 5;
+const DEATH_FRAME_TIME  = 180;
+const INPUT_REPEAT_DELAY = 350;   // OS-keyboard-repeat emulation (adapted for web)
+const INPUT_REPEAT_RATE  = 100;
 
-/* ---------- Seeded RNG ---------- */
-function mulberry32(a) {
-  return function () {
-    a |= 0; a = (a + 0x6D2B79F5) | 0;
-    let t = Math.imul(a ^ (a >>> 15), 1 | a);
-    t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t;
-    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
-  };
-}
+/* The 8 cat spawn points: corners + edge midpoints of the board */
+const SPAWN_POINTS = [
+  { x: 1, y: 1 }, { x: 21, y: 1 }, { x: 21, y: 21 }, { x: 1, y: 21 },
+  { x: 11, y: 1 }, { x: 21, y: 11 }, { x: 11, y: 21 }, { x: 1, y: 11 }
+];
+const START_POS = { x: 11, y: 11 };
 
-/* ---------- DOM ---------- */
 const $ = (id) => document.getElementById(id);
 const cv = $('game');
 const ctx = cv.getContext('2d');
 
-/* ---------- Audio (tiny synth, no assets) ---------- */
-const AudioSys = {
-  ctx: null, muted: localStorage.getItem('rr_muted') === '1',
+/* ---------- Audio: PC-speaker-style beeps (recreated) ---------- */
+const Sfx = {
+  ac: null,
+  muted: localStorage.getItem('rr_muted') === '1',
   ensure() {
-    if (!this.ctx) {
-      try { this.ctx = new (window.AudioContext || window.webkitAudioContext)(); }
-      catch (e) { /* no audio */ }
-    }
-    if (this.ctx && this.ctx.state === 'suspended') this.ctx.resume();
+    if (!this.ac) { try { this.ac = new (window.AudioContext || window.webkitAudioContext)(); } catch (e) {} }
+    if (this.ac && this.ac.state === 'suspended') this.ac.resume();
   },
-  beep(f0, f1, dur, type = 'square', vol = 0.12) {
-    if (this.muted || !this.ctx) return;
-    const t = this.ctx.currentTime;
-    const o = this.ctx.createOscillator(), g = this.ctx.createGain();
+  beep(f0, f1, dur, type = 'square', vol = 0.08) {
+    if (this.muted || !this.ac) return;
+    const t = this.ac.currentTime;
+    const o = this.ac.createOscillator(), g = this.ac.createGain();
     o.type = type;
     o.frequency.setValueAtTime(f0, t);
     o.frequency.exponentialRampToValueAtTime(Math.max(1, f1), t + dur);
     g.gain.setValueAtTime(vol, t);
     g.gain.exponentialRampToValueAtTime(0.0001, t + dur);
-    o.connect(g); g.connect(this.ctx.destination);
+    o.connect(g); g.connect(this.ac.destination);
     o.start(t); o.stop(t + dur + 0.02);
   },
-  step()    { this.beep(220, 200, 0.05, 'square', 0.03); },
-  push()    { this.beep(120, 80, 0.12, 'triangle', 0.16); },
-  cheese()  { this.beep(880, 1320, 0.10, 'square', 0.10); },
-  trapped() { this.beep(600, 180, 0.28, 'sawtooth', 0.14); },
-  death()   { this.beep(300, 60, 0.5, 'sawtooth', 0.2); },
-  clear()   { [523, 659, 784, 1047].forEach((f, i) => setTimeout(() => this.beep(f, f, 0.14, 'square', 0.11), i * 110)); },
-  spawn()   { this.beep(150, 90, 0.2, 'square', 0.1); },
-  ui()      { this.beep(500, 500, 0.05, 'square', 0.06); },
+  push()    { this.beep(110, 70, 0.10, 'square', 0.10); },
+  blocked() { this.beep(60, 55, 0.05, 'square', 0.05); },
+  cheese()  { this.beep(700, 1200, 0.09, 'square', 0.09); setTimeout(() => this.beep(900, 1500, 0.07, 'square', 0.08), 60); },
+  pin()     { this.beep(500, 160, 0.22, 'square', 0.10); },
+  death()   { this.beep(320, 50, 0.55, 'sawtooth', 0.14); },
+  spawn()   { this.beep(160, 320, 0.12, 'square', 0.08); },
+  hole()    { this.beep(240, 90, 0.3, 'triangle', 0.12); },
+  boom()    { this.beep(90, 40, 0.25, 'sawtooth', 0.14); },
+  clearJingle() { [392, 523, 659, 784].forEach((f, i) => setTimeout(() => this.beep(f, f, 0.12, 'square', 0.09), i * 100)); },
+  ui()      { this.beep(440, 440, 0.04, 'square', 0.05); }
 };
 
 /* ---------- Game state ---------- */
 const G = {
-  state: State.TITLE,
-  score: 0,
-  best: parseInt(localStorage.getItem('rr_high') || '0', 10) || 0,
-  lives: 3,
+  state: 'unstarted',            // unstarted | playing | winding | paused | over
+  grid: new Uint8Array(N * N),
   level: 1,
-  startLevel: 1,
-  terrain: new Uint8Array(COLS * ROWS),
-  cheese: new Set(),
-  cats: [],
+  score: 0,
+  livesRemaining: 2,             // + current life = 3 total (original semantics)
+  spawnCycle: [1], spawnIndex: 0,
+  clockInterval: 5,
+  yarnCfg: null,                 // [min,max] ms or null
+  yarnTimer: 0,
+  cats: [],                      // {x,y,status:'active'|'waiting'|'suspended'}
   yarns: [],
-  mouse: { x: 0, y: 0, stuckUntil: 0 },
-  catAcc: 0, catInterval: 430,
-  yarnAcc: 0, yarnInterval: 300,
-  clock: 0, spawnEvery: 28000,
-  rng: Math.random,
-  dieT: 0, clearT: 0,
-  blinkT: 0,
-  shake: 0,
+  player: { x: 11, y: 11, status: 'active', stuckTime: 0, deathT: 0, killer: null },
+  clock: { acc: 0, seconds: 0, minutes: 0, target: 5 },
+  catAcc: 0,
+  heldDirs: [],                  // stack of held directions
+  lastMoveAt: 0,
+  best: parseInt(localStorage.getItem('rr_high') || '0', 10) || 0
 };
 
-/* ---------- Level generation ---------- */
-function genLevel(lvl) {
-  G.level = lvl;
-  for (let attempt = 0; attempt < 24; attempt++) {
-    G.rng = mulberry32(lvl * 7919 + attempt * 104729 + 17);
-    if (tryGen(lvl)) return;
-  }
-  // last resort: simple open board
-  G.rng = mulberry32(lvl * 7919 + 1);
-  tryGen(lvl, true);
-}
+const idx = (x, y) => y * N + x;
+const inB = (x, y) => x >= 0 && x < N && y >= 0 && y < N;
+const at = (x, y) => G.grid[idx(x, y)];
+const setCell = (x, y, t) => { G.grid[idx(x, y)] = t; };
+const catAt = (x, y) => G.cats.find(c => c.x === x && c.y === y && c.status !== 'killed');
 
-function tryGen(lvl, simple = false) {
-  const T = G.terrain, rng = G.rng;
-  T.fill(EMPTY);
-  G.cheese.clear(); G.cats = []; G.yarns = [];
-
-  // border walls
-  for (let x = 0; x < COLS; x++) { T[idx(x, 0)] = WALL; T[idx(x, ROWS - 1)] = WALL; }
-  for (let y = 0; y < ROWS; y++) { T[idx(0, y)] = WALL; T[idx(COLS - 1, y)] = WALL; }
-
-  const mx = COLS >> 1, my = ROWS - 4;         // mouse spawn (bottom-centre)
-  G.mouse = { x: mx, y: my, stuckUntil: 0 };
-
-  const wallP = simple ? 0 : 0.045 + Math.min(0.055, lvl * 0.0035);
-  const blockP = simple ? 0.14 : 0.10 + Math.min(0.045, lvl * 0.0028);
-
-  for (let y = 1; y < ROWS - 1; y++) {
-    for (let x = 1; x < COLS - 1; x++) {
-      if (Math.abs(x - mx) <= 1 && Math.abs(y - my) <= 1) continue;   // keep spawn clear
-      const r = rng();
-      if (r < wallP) T[idx(x, y)] = WALL;
-      else if (r < wallP + blockP) T[idx(x, y)] = BLOCK;
+/* ---------- Level loading ---------- */
+function loadLevel(n) {
+  const def = rrLoadLevel(n);
+  G.level = n;
+  G.grid.fill(T.EMPTY);
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const ch = def.grid[idx(x, y)];
+      G.grid[idx(x, y)] =
+        ch === 'W' ? T.WALL : ch === 'B' ? T.BLOCK : ch === 'H' ? T.HOLE :
+        ch === 'T' ? T.TRAP : ch === 'C' ? T.CHEESE : T.EMPTY;
     }
   }
-
-  // cats: count grows with level
-  const nCats = Math.min(2 + Math.ceil(lvl / 2), 9);
-  const spots = [];
-  for (let y = 1; y < ROWS - 1; y++)
-    for (let x = 1; x < COLS - 1; x++)
-      if (T[idx(x, y)] === EMPTY && (Math.abs(x - mx) + Math.abs(y - my)) >= 7) spots.push([x, y]);
-  shuffle(spots, rng);
-  for (let i = 0; i < nCats && spots.length; i++) {
-    const [x, y] = spots.pop();
-    G.cats.push({ x, y });
-  }
-
-  // hazards
-  const nHoles = lvl >= 3 ? Math.min(1 + ((lvl - 3) >> 1), 5) : 0;
-  const nTraps = lvl >= 5 ? Math.min(1 + ((lvl - 5) >> 1), 4) : 0;
-  const nYarn  = lvl >= 7 ? Math.min(1 + ((lvl - 7) >> 2), 3) : 0;
-  const placeHazard = (type, minDist) => {
-    for (let tries = 0; tries < 60; tries++) {
-      const x = 1 + Math.floor(rng() * (COLS - 2));
-      const y = 1 + Math.floor(rng() * (ROWS - 2));
-      if (T[idx(x, y)] !== EMPTY) continue;
-      if (Math.abs(x - mx) + Math.abs(y - my) < minDist) continue;
-      T[idx(x, y)] = type;
-      return true;
-    }
-    return false;
-  };
-  for (let i = 0; i < nHoles; i++) placeHazard(HOLE, 4);
-  for (let i = 0; i < nTraps; i++) placeHazard(TRAP, 5);
-  // yarn balls spawn as entities on free tiles far from mouse
-  for (let i = 0; i < nYarn; i++) {
-    for (let tries = 0; tries < 60; tries++) {
-      const x = 1 + Math.floor(rng() * (COLS - 2));
-      const y = 1 + Math.floor(rng() * (ROWS - 2));
-      if (T[idx(x, y)] !== EMPTY) continue;
-      if (Math.abs(x - mx) + Math.abs(y - my) < 7) continue;
-      if (G.cats.some(c => c.x === x && c.y === y)) continue;
-      const dirs = [[1, 1], [1, -1], [-1, 1], [-1, -1]][Math.floor(rng() * 4)];
-      G.yarns.push({ x, y, dx: dirs[0], dy: dirs[1] });
-      break;
-    }
-  }
-
-  // connectivity: flood fill from mouse over non-WALL cells (blocks are pushable)
-  const seen = new Uint8Array(COLS * ROWS);
-  const stack = [[mx, my]];
-  seen[idx(mx, my)] = 1;
-  let reach = 0;
-  while (stack.length) {
-    const [x, y] = stack.pop();
-    reach++;
-    for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-      const nx = x + ox, ny = y + oy;
-      if (!inB(nx, ny) || seen[idx(nx, ny)]) continue;
-      if (T[idx(nx, ny)] === WALL) continue;
-      seen[idx(nx, ny)] = 1;
-      stack.push([nx, ny]);
-    }
-  }
-  const openCells = [];
-  for (let i = 0; i < T.length; i++) if (T[i] !== WALL) openCells.push(i);
-  if (reach < openCells.length * 0.9) return false;          // too compartmentalised
-  if (G.cats.some(c => !seen[idx(c.x, c.y)])) return false;  // cat sealed off at spawn
-  return G.cats.length >= Math.min(2, nCats);
+  G.clockInterval = def.clock != null ? def.clock : 5;
+  G.spawnCycle = (def.spawn && def.spawn.length) ? def.spawn : [1];
+  G.spawnIndex = 0;
+  G.yarnCfg = def.yarn ? [def.yarn[0] * 1000, def.yarn[1] * 1000] : null;
+  G.yarnTimer = G.yarnCfg ? G.yarnCfg[0] : 0;
+  G.cats = [];
+  G.yarns = [];
+  G.clock = { acc: 0, seconds: 0, minutes: 0, target: G.clockInterval };
+  G.catAcc = 0;
+  placePlayer();
+  spawnBatch();                                   // the original spawns the first batch at level start
+  updateChrome();
 }
 
-function shuffle(a, rng) {
-  for (let i = a.length - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1));
-    [a[i], a[j]] = [a[j], a[i]];
+function placePlayer() {
+  // original respawn: centre cell; a static entity there is destroyed,
+  // otherwise fall back to a free border spawn point
+  let pos = { ...START_POS };
+  const ent = at(pos.x, pos.y);
+  if (ent === T.CAT || ent === T.YARN) {
+    const p = freeSpawnPoint();
+    if (p) pos = p;
+  } else if (ent !== T.EMPTY) {
+    setCell(pos.x, pos.y, T.EMPTY);               // static entity destroyed
   }
+  G.player = { x: pos.x, y: pos.y, status: 'active', stuckTime: 0, deathT: 0, killer: null };
+  setCell(pos.x, pos.y, T.MOUSE);
 }
 
-/* ---------- Movement helpers ---------- */
-const solidForMouse = (x, y) => {
-  const t = G.terrain[idx(x, y)];
-  return t === WALL || t === BLOCK;
-};
-const solidForCat = (x, y) => {
-  if (!inB(x, y)) return true;
-  const t = G.terrain[idx(x, y)];
-  return t !== EMPTY;                    // cats only walk on open floor
-};
-const solidForYarn = (x, y) => {
-  if (!inB(x, y)) return true;
-  const t = G.terrain[idx(x, y)];
-  return t === WALL || t === BLOCK;      // yarn bounces off walls & crates
-};
-const catAt = (x, y) => G.cats.find(c => c.x === x && c.y === y);
-const yarnAt = (x, y) => G.yarns.find(g => g.x === x && g.y === y);
+function freeSpawnPoint() {
+  const order = SPAWN_POINTS.slice().sort(() => Math.random() - 0.5);
+  for (const p of order) if (at(p.x, p.y) === T.EMPTY) return { ...p };
+  return null;
+}
 
-/* ---------- Mouse ---------- */
-function tryMouseMove(ox, oy) {
-  if (G.state !== State.PLAYING) return;
-  const m = G.mouse;
-  if (performance.now() < m.stuckUntil) return;          // sunk in a hole
-  const nx = m.x + ox, ny = m.y + oy;
-  if (!inB(nx, ny)) return;
+function spawnBatch() {
+  const count = G.spawnCycle[G.spawnIndex % G.spawnCycle.length];
+  G.spawnIndex++;
+  let spawned = 0;
+  for (let i = 0; i < count; i++) {
+    const p = freeSpawnPoint();
+    if (!p) break;                                // all spawn points blocked: deferred
+    G.cats.push({ x: p.x, y: p.y, status: 'active' });
+    setCell(p.x, p.y, T.CAT);
+    spawned++;
+  }
+  if (spawned) Sfx.spawn();
+  updateChrome();
+}
 
-  // push crate?
-  if (G.terrain[idx(nx, ny)] === BLOCK) {
-    const bx = nx + ox, by = ny + oy;
-    if (!inB(bx, by) || G.terrain[idx(bx, by)] !== EMPTY || G.cheese.has(idx(bx, by))
-        || catAt(bx, by) || yarnAt(bx, by)) {
-      AudioSys.push();
-      return;                                            // crate can't budge
+/* ---------- Clock (the original's 30-position stopwatch) ---------- */
+function clockTick(mult, dt) {
+  G.clock.acc += dt * mult;
+  while (G.clock.acc >= CLOCK_SECOND) {
+    G.clock.acc -= CLOCK_SECOND;
+    G.clock.seconds++;
+    if (G.clock.seconds >= CLOCK_POSITIONS) {
+      G.clock.seconds = 0;
+      G.clock.minutes++;
+      if (G.clock.minutes >= CLOCK_POSITIONS) G.clock.minutes = 0;
+      onMinuteTick();
     }
-    G.terrain[idx(bx, by)] = BLOCK;
-    G.terrain[idx(nx, ny)] = EMPTY;
-    m.x = nx; m.y = ny;
-    AudioSys.push();
-    checkTrappedCats();
-    return;
-  }
-
-  // cat contact = death
-  if (catAt(nx, ny)) { killMouse(); return; }
-
-  m.x = nx; m.y = ny;
-  AudioSys.step();
-
-  // cheese
-  const ci = idx(nx, ny);
-  if (G.cheese.has(ci)) {
-    G.cheese.delete(ci);
-    G.score += 50;
-    AudioSys.cheese();
-    updateHud();
-  }
-  // hazards
-  const t = G.terrain[ci];
-  if (t === TRAP) { killMouse(); return; }
-  if (t === HOLE) {
-    m.stuckUntil = performance.now() + 3000;
-    AudioSys.beep(200, 90, 0.25, 'triangle', 0.14);
+    if (G.state === 'playing' && (G.clock.seconds === 14 || G.clock.seconds === 0)) {
+      G.score += 1;                               // survival scoring, as in the original engine
+      updateChrome();
+    }
   }
 }
-
-function killMouse() {
-  if (G.state !== State.PLAYING) return;
-  G.state = State.DYING;
-  G.dieT = performance.now();
-  G.lives--;
-  G.shake = 12;
-  AudioSys.death();
-  updateHud();
+function onMinuteTick() {
+  if (G.clock.target === 0) return;
+  if ((G.state === 'playing' || G.state === 'winding') && G.clock.minutes === G.clock.target) {
+    G.clock.target = advanceTarget(G.clock.target);
+    spawnBatch();
+    if (G.state === 'winding') G.state = 'playing';
+    updateChrome();
+  }
+}
+function advanceTarget(t) {
+  if (t === 0) return 0;
+  t += G.clockInterval;
+  if (t >= CLOCK_POSITIONS) t -= CLOCK_POSITIONS;
+  return t;
 }
 
-/* ---------- Cats ---------- */
+/* ---------- Cat AI (original: greedy 8-directional chase) ---------- */
+const DELTAS8 = [
+  { x: -1, y: -1 }, { x: 0, y: -1 }, { x: 1, y: -1 },
+  { x: -1, y: 0 },                   { x: 1, y: 0 },
+  { x: -1, y: 1 },  { x: 0, y: 1 },  { x: 1, y: 1 }
+];
+
 function catTick() {
   for (const c of G.cats) {
-    if (G.state !== State.PLAYING) return;
-    catStep(c);
-    if (c.x === G.mouse.x && c.y === G.mouse.y) { killMouse(); return; }
+    if (c.status !== 'active' && c.status !== 'waiting') continue;
+    catMove(c);
   }
-  checkTrappedCats();
-}
-
-function catStep(c) {
-  const dx = G.mouse.x - c.x, dy = G.mouse.y - c.y;
-  let opts = [];
-  const hx = Math.sign(dx), hy = Math.sign(dy);
-  if (Math.abs(dx) >= Math.abs(dy)) { if (hx) opts.push([hx, 0]); if (hy) opts.push([0, hy]); }
-  else { if (hy) opts.push([0, hy]); if (hx) opts.push([hx, 0]); }
-  if (Math.abs(dx) === Math.abs(dy) && G.rng() < 0.5) opts.reverse();
-  if (G.rng() < 0.12) opts.reverse();                    // a little wander
-  for (const [ox, oy] of opts) {
-    if (catCan(c, ox, oy)) { catMove(c, ox, oy); return; }
-  }
-  // perpendicular scramble
-  const perp = [[1, 0], [-1, 0], [0, 1], [0, -1]].sort(() => G.rng() - 0.5);
-  for (const [ox, oy] of perp) {
-    if (catCan(c, ox, oy)) { catMove(c, ox, oy); return; }
+  // round clear: every spawned cat is pinned simultaneously
+  if (G.cats.length > 0 && G.cats.every(c => c.status === 'waiting')) {
+    roundClear();
   }
 }
 
-function catCan(c, ox, oy) {
-  const nx = c.x + ox, ny = c.y + oy;
-  if (solidForCat(nx, ny)) return false;
-  if (catAt(nx, ny)) return false;
-  return true;
-}
-function catMove(c, ox, oy) { c.x += ox; c.y += oy; }
-
-/* A cat boxed in on all four orthogonal sides becomes cheese. */
-function checkTrappedCats() {
-  for (let i = G.cats.length - 1; i >= 0; i--) {
-    const c = G.cats[i];
-    const boxed = [[1, 0], [-1, 0], [0, 1], [0, -1]]
-      .every(([ox, oy]) => {
-        const nx = c.x + ox, ny = c.y + oy;
-        if (!inB(nx, ny)) return true;                   // arena edge counts as solid
-        const t = G.terrain[idx(nx, ny)];
-        return t === WALL || t === BLOCK;
-      });
-    if (boxed) {
-      G.cheese.add(idx(c.x, c.y));
-      G.cats.splice(i, 1);
-      G.score += 250;
-      AudioSys.trapped();
-      updateHud();
+function catMove(c) {
+  let best = null, bestDist = Infinity;
+  const p = G.player;
+  for (const d of DELTAS8) {
+    const nx = c.x + d.x, ny = c.y + d.y;
+    if (!inB(nx, ny)) continue;
+    if (nx === p.x && ny === p.y && (p.status === 'active' || p.status === 'stuck')) {
+      // the cat reaches the mouse
+      setCell(c.x, c.y, T.EMPTY);
+      c.status = 'suspended';
+      killPlayer(c);
+      return;
     }
+    if (at(nx, ny) !== T.EMPTY) continue;         // walls, blocks, cheese, holes, traps, cats: all block
+    const dist = (nx - p.x) * (nx - p.x) + (ny - p.y) * (ny - p.y);
+    if (dist < bestDist) { bestDist = dist; best = { x: nx, y: ny }; }
   }
-  if (G.state === State.PLAYING && G.cats.length === 0) levelClear();
-}
-
-function spawnCat() {
-  if (G.cats.length >= 10) return;
-  const rng = Math.random;
-  for (let tries = 0; tries < 80; tries++) {
-    const x = 1 + Math.floor(rng() * (COLS - 2));
-    const y = 1 + Math.floor(rng() * (ROWS - 2));
-    if (G.terrain[idx(x, y)] !== EMPTY) continue;
-    if (Math.abs(x - G.mouse.x) + Math.abs(y - G.mouse.y) < 8) continue;
-    if (catAt(x, y) || yarnAt(x, y)) continue;
-    G.cats.push({ x, y });
-    AudioSys.spawn();
-    G.clock = 0;
-    updateHud();
+  if (!best) {
+    c.status = 'waiting';                         // pinned on all 8 sides
     return;
   }
+  setCell(c.x, c.y, T.EMPTY);
+  c.x = best.x; c.y = best.y;
+  c.status = 'active';
+  setCell(c.x, c.y, T.CAT);
 }
 
-/* ---------- Yarn balls ---------- */
-function yarnStepAll() {
-  for (const g of G.yarns) {
-    let nx = g.x + g.dx, ny = g.y + g.dy;
-    const bx = solidForYarn(nx, g.y);
-    const by = solidForYarn(g.x, ny);
-    if (bx && by) { g.dx = -g.dx; g.dy = -g.dy; continue; }
-    if (bx) { g.dx = -g.dx; ny = g.y + g.dy; if (solidForYarn(nx, ny)) continue; }
-    if (by) { g.dy = -g.dy; nx = g.x + g.dx; if (solidForYarn(nx, ny)) continue; }
-    g.x = nx; g.y = ny;
-    if (g.x === G.mouse.x && g.y === G.mouse.y) { killMouse(); return; }
+function roundClear() {
+  for (const c of G.cats) {
+    setCell(c.x, c.y, T.CHEESE);                  // each pinned cat becomes cheese
+    G.score += 1;
   }
+  G.cats = [];
+  Sfx.clearJingle();
+  if (G.clock.target !== 0) {
+    G.state = 'winding';                          // the clock visibly winds to the next spawn
+  } else {
+    nextLevel();
+  }
+  updateChrome();
 }
 
-/* ---------- Flow ---------- */
-function startGame() {
-  G.score = 0;
-  G.lives = 3;
-  loadLevel(G.startLevel);
-  setState(State.PLAYING);
+function nextLevel() {
+  loadLevel(G.level + 1);                         // level 51, 52, ... continue indefinitely
+  G.state = 'playing';
+  updateChrome();
 }
 
-function loadLevel(lvl) {
-  genLevel(lvl);
-  G.catAcc = 0;
-  G.yarnAcc = 0;
-  G.clock = 0;
-  G.catInterval = Math.max(260, 430 - (lvl - 1) * 12);
-  G.spawnEvery = Math.max(16000, 28000 - lvl * 300);
-  updateHud();
+/* ---------- Player ---------- */
+function tryMove(dx, dy) {
+  const p = G.player;
+  if (G.state !== 'playing' || p.status !== 'active') return;
+  const nx = p.x + dx, ny = p.y + dy;
+  if (!inB(nx, ny)) return;
+  const t = at(nx, ny);
+  switch (t) {
+    case T.EMPTY:
+      stepTo(nx, ny);
+      break;
+    case T.BLOCK:
+      push(nx, ny, dx, dy);
+      break;
+    case T.WALL:
+    case T.YARN:
+      Sfx.blocked();
+      break;
+    case T.CAT: {
+      const c = catAt(nx, ny);
+      setCell(nx, ny, T.EMPTY);
+      c.status = 'suspended';
+      stepTo(nx, ny);
+      killPlayer(c);
+      break;
+    }
+    case T.CHEESE:
+      setCell(nx, ny, T.EMPTY);
+      G.score += 100;                             // eating cheese, as in the original
+      Sfx.cheese();
+      stepTo(nx, ny);
+      updateChrome();
+      break;
+    case T.HOLE:
+      setCell(nx, ny, T.EMPTY);                   // the hole is consumed
+      stepTo(nx, ny);
+      p.status = 'stuck';
+      p.stuckTime = HOLE_STUCK_TIME;
+      Sfx.hole();
+      break;
+    case T.TRAP:
+      setCell(nx, ny, T.EMPTY);                   // the trap is consumed
+      stepTo(nx, ny);
+      killPlayer(null);
+      break;
+  }
+  updateChrome();
 }
 
-function levelClear() {
-  const bonus = 100 * G.level;
-  G.score += bonus;
-  $('clearBonus').textContent = '+' + bonus;
-  G.state = State.CLEAR;
-  G.clearT = performance.now();
-  AudioSys.clear();
-  saveBest();
-  updateHud();
+function stepTo(nx, ny) {
+  const p = G.player;
+  setCell(p.x, p.y, T.EMPTY);
+  p.x = nx; p.y = ny;
+  setCell(nx, ny, T.MOUSE);
 }
 
-function nextLevel() { loadLevel(G.level + 1); setState(State.PLAYING); }
+/* Original push: chains of blocks slide one cell; the chain's end determines
+   whether the push is legal. */
+function push(tx, ty, dx, dy) {
+  let ex = tx, ey = ty;
+  while (at(ex, ey) === T.BLOCK) { ex += dx; ey += dy; }
+  const end = at(ex, ey);
+  if (!inB(ex, ey) || end === T.WALL || end === T.TRAP || end === T.YARN) {
+    Sfx.blocked();
+    return;
+  }
+  if (end === T.CAT) {
+    const c = catAt(ex, ey);
+    setCell(ex, ey, T.EMPTY);
+    catMove(c);                                   // the cat tries to flee; if pinned the push fails
+    if (c.status === 'waiting') {
+      setCell(ex, ey, T.CAT);                     // it never left the cell
+      Sfx.blocked();
+      return;
+    }
+  } else if (end === T.CHEESE) {
+    setCell(ex, ey, T.EMPTY);                     // blocks pushed over cheese destroy it
+  } else if (end === T.HOLE) {
+    ex -= dx; ey -= dy;                           // the last block falls in; the hole stays
+    setCell(ex, ey, T.EMPTY);
+  }
+  // slide the chain one cell toward the end
+  let cx = ex, cy = ey;
+  while (cx !== tx || cy !== ty) {
+    const sx = cx - dx, sy = cy - dy;
+    const e = at(sx, sy);
+    setCell(sx, sy, T.EMPTY);
+    setCell(cx, cy, e);
+    cx = sx; cy = sy;
+  }
+  stepTo(tx, ty);
+  Sfx.push();
+}
 
-function retryLevel() {
-  G.lives = 3;
-  loadLevel(G.level);            // same seed → same layout
-  setState(State.PLAYING);
+function killPlayer(killer) {
+  const p = G.player;
+  p.status = 'dying';
+  p.deathT = performance.now();
+  p.killer = killer;
+  setCell(p.x, p.y, T.EMPTY);
+  Sfx.death();
+}
+
+function afterDeath() {
+  const p = G.player;
+  if (p.killer) {
+    // the killer cat takes the mouse's place
+    setCell(p.x, p.y, T.CAT);
+    G.cats.push({ x: p.x, y: p.y, status: 'active' });
+    p.killer = null;
+  }
+  G.livesRemaining--;
+  if (G.livesRemaining >= 0) {
+    placePlayer();
+  } else {
+    gameOver();
+  }
+  updateChrome();
 }
 
 function gameOver() {
-  G.state = State.OVER;
-  saveBest();
+  G.state = 'over';
+  saveHighScore();
   $('overScore').textContent = G.score;
-  $('overBest').textContent = G.score >= G.best && G.score > 0 ? '★ NEW BEST!' : 'BEST ' + G.best;
-  showScreen('scrOver');
+  $('overLevel').textContent = G.level;
+  $('overBest').textContent = G.best;
+  openDialog('dlgOver');
+  updateChrome();
 }
 
-function saveBest() {
-  if (G.score > G.best) { G.best = G.score; localStorage.setItem('rr_high', String(G.best)); updateHud(); }
+function saveHighScore() {
+  if (G.score <= 0) return;
+  if (G.score > G.best) {
+    G.best = G.score;
+    localStorage.setItem('rr_high', String(G.best));
+  }
+  try {
+    const list = JSON.parse(localStorage.getItem('rr_scores') || '[]');
+    list.push({ score: G.score, level: G.level, date: new Date().toISOString().slice(0, 10) });
+    list.sort((a, b) => b.score - a.score);
+    localStorage.setItem('rr_scores', JSON.stringify(list.slice(0, 10)));
+  } catch (e) {}
 }
 
-/* ---------- UI state ---------- */
-function showScreen(id) {
-  const ov = $('overlay');
-  ov.classList.toggle('hidden', !id);
-  for (const s of ['scrTitle', 'scrClear', 'scrOver', 'scrPause'])
-    $(s).classList.toggle('hidden', s !== id);
-}
-function setState(s) {
-  G.state = s;
-  if (s === State.TITLE) showScreen('scrTitle');
-  else if (s === State.CLEAR) showScreen('scrClear');
-  else if (s === State.OVER) showScreen('scrOver');
-  else if (s === State.PAUSED) showScreen('scrPause');
-  else showScreen(null);
-  updateHud();
+/* ---------- Yarn balls (original behaviour) ---------- */
+function spawnYarn() {
+  if (G.yarns.filter(y => y.status !== 'killed').length >= 2) return;
+  const cand = [];
+  for (let x = 1; x < N - 1; x++) { cand.push({ x, y: 0, side: 'h' }); cand.push({ x, y: N - 1, side: 'h' }); }
+  for (let y = 1; y < N - 1; y++) { cand.push({ x: 0, y, side: 'v' }); cand.push({ x: N - 1, y, side: 'v' }); }
+  for (let tries = 0; tries < 50; tries++) {
+    const c = cand[Math.floor(Math.random() * cand.length)];
+    if (at(c.x, c.y) !== T.WALL) continue;
+    const dy = c.side === 'h' ? (c.y === 0 ? 1 : -1) : [-1, 0, 1][Math.floor(Math.random() * 3)];
+    const dx = c.side === 'h' ? [-1, 0, 1][Math.floor(Math.random() * 3)] : (c.x === 0 ? 1 : -1);
+    setCell(c.x, c.y, T.YARN);                    // spawns on the wall cell
+    G.yarns.push({
+      x: c.x, y: c.y, dx, dy,
+      status: 'waiting',
+      statusTime: YARN_WAIT_MIN + Math.floor(Math.random() * (YARN_WAIT_MAX - YARN_WAIT_MIN)),
+      moveCount: 0, suspX: 0, suspY: 0, deathT: 0
+    });
+    return;
+  }
 }
 
-function updateHud() {
-  $('hudScore').textContent = G.score;
-  $('hudLevel').textContent = G.level;
-  $('hudCats').textContent = G.cats.length;
-  $('hudBest').textContent = G.best;
-  const lv = $('hudLives');
-  lv.innerHTML = '';
-  for (let i = 0; i < 3; i++) {
-    const s = document.createElement('span');
-    s.textContent = '🐭';
-    if (i >= G.lives) s.className = 'dead';
-    lv.appendChild(s);
+function yarnUpdate(g, dt) {
+  g.statusTime -= dt;
+  switch (g.status) {
+    case 'waiting':
+      if (g.statusTime <= 0) { g.status = 'active'; g.statusTime = YARN_MOVE_TIME; }
+      break;
+    case 'active': {
+      if (g.statusTime > 0) return;
+      const nx = g.x + g.dx, ny = g.y + g.dy;
+      const t = inB(nx, ny) ? at(nx, ny) : T.WALL;
+      const behind = g.moveCount === 0 ? T.WALL : T.EMPTY;
+      if (t === T.EMPTY) {
+        setCell(g.x, g.y, behind);                // restores the wall it spawned on
+        g.x = nx; g.y = ny;
+        setCell(nx, ny, T.YARN);
+        g.moveCount++;
+      } else if (t === T.MOUSE && G.player.status !== 'dying' && G.player.status !== 'killed') {
+        setCell(g.x, g.y, behind);
+        g.status = 'killed';
+        killPlayer(null);
+      } else if (t === T.HOLE) {
+        g.status = 'killed';                      // falls into the hole
+        Sfx.boom();
+      } else if (t === T.CAT) {
+        g.suspX = nx; g.suspY = ny;
+        setCell(g.x, g.y, behind);
+        g.status = 'suspended';
+        g.statusTime = 0;
+      } else {
+        g.status = 'dying';                       // explodes on walls, blocks, traps, cheese
+        g.deathT = performance.now();
+        Sfx.boom();
+      }
+      g.statusTime = YARN_MOVE_TIME;
+      break;
+    }
+    case 'dying':
+      if (performance.now() - g.deathT > 450) g.status = 'killed';
+      break;
+    case 'suspended': {
+      const occ = at(g.suspX, g.suspY);
+      if (occ === T.EMPTY) {
+        g.x = g.suspX; g.y = g.suspY;
+        setCell(g.x, g.y, T.YARN);
+        g.status = 'active';
+        g.statusTime = YARN_MOVE_TIME;
+        return;
+      }
+      if (g.statusTime >= YARN_MOVE_TIME) {
+        const tx = g.suspX + g.dx, ty = g.suspY + g.dy;
+        const tt = inB(tx, ty) ? at(tx, ty) : T.WALL;
+        if (tt === T.EMPTY || tt === T.CAT) { g.suspX = tx; g.suspY = ty; }
+        else { g.status = 'dying'; g.deathT = performance.now(); }
+        g.statusTime = 0;
+      }
+      break;
+    }
+  }
+}
+
+function cleanupYarns() {
+  for (let i = G.yarns.length - 1; i >= 0; i--) {
+    const g = G.yarns[i];
+    if (g.status === 'killed') {
+      if (at(g.x, g.y) === T.YARN) setCell(g.x, g.y, T.EMPTY);
+      G.yarns.splice(i, 1);
+      if (G.yarnCfg) G.yarnTimer = G.yarnCfg[0] + Math.floor(Math.random() * (G.yarnCfg[1] - G.yarnCfg[0]));
+    }
   }
 }
 
 /* ---------- Main loop ---------- */
 let lastT = 0;
 function frame(t) {
-  const dt = Math.min(50, t - lastT);
+  const dt = Math.min(60, t - lastT || 16);
   lastT = t;
-  if (G.state === State.PLAYING) {
+  if (G.state === 'playing') {
+    clockTick(1, dt);
     G.catAcc += dt;
-    while (G.catAcc >= G.catInterval) { G.catAcc -= G.catInterval; catTick(); if (G.state !== State.PLAYING) break; }
-    if (G.state === State.PLAYING) {
-      G.yarnAcc += dt;
-      while (G.yarnAcc >= G.yarnInterval) { G.yarnAcc -= G.yarnInterval; yarnStepAll(); if (G.state !== State.PLAYING) break; }
+    while (G.catAcc >= CAT_TICK && G.state === 'playing') { G.catAcc -= CAT_TICK; catTick(); }
+    for (const g of G.yarns) yarnUpdate(g, dt);
+    cleanupYarns();
+    if (G.yarnCfg) {
+      const alive = G.yarns.filter(y => y.status !== 'killed').length;
+      if (alive < 2) {
+        G.yarnTimer -= dt;
+        if (G.yarnTimer <= 0) {
+          spawnYarn();
+          G.yarnTimer = G.yarnCfg[0] + Math.floor(Math.random() * (G.yarnCfg[1] - G.yarnCfg[0]));
+        }
+      }
     }
-    if (G.state === State.PLAYING) {
-      G.clock += dt;
-      if (G.clock >= G.spawnEvery) spawnCat();
+    handleHeldInput(t);
+    const p = G.player;
+    if (p.status === 'stuck') {
+      p.stuckTime -= dt;
+      if (p.stuckTime <= 0) p.status = 'active';
+    } else if (p.status === 'dying') {
+      if (t - p.deathT > DEATH_FRAMES * DEATH_FRAME_TIME) afterDeath();
     }
-  } else if (G.state === State.DYING) {
-    if (t - G.dieT > 900) {
-      if (G.lives > 0) { loadLevel(G.level); setState(State.PLAYING); }
-      else gameOver();
-    }
-  } else if (G.state === State.CLEAR) {
-    if (t - G.clearT > 1600) nextLevel();
+  } else if (G.state === 'winding') {
+    clockTick(WIND_SPEED, dt);
   }
-  if (G.shake > 0) G.shake = Math.max(0, G.shake - dt / 40);
   draw(t);
   requestAnimationFrame(frame);
 }
 
-/* ---------- Drawing ---------- */
-function draw(t) {
-  ctx.save();
-  if (G.shake > 0) {
-    ctx.translate((Math.random() - 0.5) * G.shake, (Math.random() - 0.5) * G.shake);
-  }
-  // floor
-  ctx.fillStyle = '#151522';
-  ctx.fillRect(-8, -8, W + 16, H + 16);
-  for (let y = 0; y < ROWS; y++) {
-    for (let x = 0; x < COLS; x++) {
-      const px = x * CELL, py = y * CELL;
-      if ((x + y) % 2 === 0) { ctx.fillStyle = '#171726'; ctx.fillRect(px, py, CELL, CELL); }
-      drawTerrain(x, y);
-    }
-  }
-  // cheese
-  for (const ci of G.cheese) drawCheese(ci % COLS, (ci / COLS) | 0, t);
-  // yarn
-  for (const g of G.yarns) drawYarn(g.x, g.y, t);
-  // cats
-  for (const c of G.cats) drawCat(c.x, c.y, t);
-  // mouse on top
-  if (G.state !== State.TITLE) drawMouse(G.mouse.x, G.mouse.y, t);
-  ctx.restore();
-}
-
-function drawTerrain(x, y) {
-  const px = x * CELL, py = y * CELL;
-  const t = G.terrain[idx(x, y)];
-  if (t === WALL) {
-    ctx.fillStyle = '#3d4257';
-    ctx.fillRect(px, py, CELL, CELL);
-    ctx.fillStyle = '#2e3244';
-    ctx.fillRect(px, py, CELL, 3);
-    ctx.fillRect(px, py + 15, CELL, 3);
-    ctx.fillRect(px + (y % 2 ? 8 : 20), py, 3, 15);
-    ctx.fillRect(px + (y % 2 ? 22 : 6), py + 18, 3, 14);
-    ctx.fillStyle = '#4a5068';
-    ctx.fillRect(px + 2, py + 2, CELL - 4, 2);
-  } else if (t === BLOCK) {
-    // wooden crate
-    ctx.fillStyle = '#b57a24';
-    ctx.fillRect(px + 1, py + 1, CELL - 2, CELL - 2);
-    ctx.fillStyle = '#d19a3c';
-    ctx.fillRect(px + 4, py + 4, CELL - 8, CELL - 8);
-    ctx.strokeStyle = '#8a5a14';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.moveTo(px + 4, py + 4); ctx.lineTo(px + CELL - 4, py + CELL - 4);
-    ctx.moveTo(px + CELL - 4, py + 4); ctx.lineTo(px + 4, py + CELL - 4);
-    ctx.stroke();
-    ctx.strokeRect(px + 1.5, py + 1.5, CELL - 3, CELL - 3);
-  } else if (t === HOLE) {
-    ctx.fillStyle = '#050508';
-    ctx.beginPath();
-    ctx.ellipse(px + CELL / 2, py + CELL / 2, 11, 8, 0, 0, Math.PI * 2);
-    ctx.fill();
-    ctx.strokeStyle = '#2a2a3c';
-    ctx.lineWidth = 2;
-    ctx.stroke();
-  } else if (t === TRAP) {
-    ctx.fillStyle = '#5a3a3a';
-    ctx.fillRect(px + 5, py + 10, CELL - 10, CELL - 16);
-    ctx.strokeStyle = '#9a9aae';
-    ctx.lineWidth = 2;
-    ctx.beginPath();
-    ctx.arc(px + CELL / 2, py + CELL / 2 + 4, 9, Math.PI, 0);
-    ctx.stroke();
-    ctx.beginPath();
-    ctx.moveTo(px + CELL / 2 - 9, py + CELL / 2 + 4);
-    ctx.lineTo(px + CELL / 2 + 9, py + CELL / 2 + 4);
-    ctx.stroke();
-    ctx.fillStyle = '#c23b3b';
-    ctx.fillRect(px + CELL / 2 - 3, py + CELL / 2, 6, 3);
-  }
-}
-
-function drawCheese(x, y, t) {
-  const px = x * CELL, py = y * CELL;
-  const bob = Math.sin(t / 220 + x) * 1.2;
-  ctx.fillStyle = '#ffd23f';
-  ctx.beginPath();
-  ctx.moveTo(px + 6, py + 24 + bob);
-  ctx.lineTo(px + 26, py + 24 + bob);
-  ctx.lineTo(px + 26, py + 12 + bob);
-  ctx.closePath();
-  ctx.fill();
-  ctx.fillStyle = '#e8a91c';
-  ctx.fillRect(px + 6, py + 23 + bob, 20, 2);
-  ctx.fillStyle = '#c98f12';
-  ctx.beginPath(); ctx.arc(px + 18, py + 19 + bob, 1.8, 0, 7); ctx.fill();
-  ctx.beginPath(); ctx.arc(px + 12, py + 21 + bob, 1.4, 0, 7); ctx.fill();
-}
-
-function drawCat(x, y, t) {
-  const px = x * CELL, py = y * CELL;
-  const step = Math.floor(t / 300) % 2;
-  // how close is this cat to being boxed? (worried eyes)
-  let sides = 0;
-  for (const [ox, oy] of [[1, 0], [-1, 0], [0, 1], [0, -1]]) {
-    const nx = x + ox, ny = y + oy;
-    if (!inB(nx, ny) || G.terrain[idx(nx, ny)] === WALL || G.terrain[idx(nx, ny)] === BLOCK) sides++;
-  }
-  const worried = sides >= 3;
-  // body
-  ctx.fillStyle = '#e8853d';
-  ctx.fillRect(px + 6, py + 9, 20, 18);
-  // head
-  ctx.fillRect(px + 4, py + 5, 24, 14);
-  // ears
-  ctx.fillStyle = '#d1742c';
-  ctx.beginPath(); ctx.moveTo(px + 5, py + 7); ctx.lineTo(px + 9, py + 1); ctx.lineTo(px + 12, py + 7); ctx.fill();
-  ctx.beginPath(); ctx.moveTo(px + 19, py + 7); ctx.lineTo(px + 23, py + 1); ctx.lineTo(px + 27, py + 7); ctx.fill();
-  // eyes
-  const dxm = Math.sign(G.mouse.x - x), dym = Math.sign(G.mouse.y - y);
-  ctx.fillStyle = worried ? '#ff4a4a' : '#9ef01a';
-  const ex = px + 10 + dxm, ey = py + 10 + dym + (step ? 0 : 0);
-  ctx.fillRect(ex, ey, 4, worried ? 5 : 3);
-  ctx.fillRect(ex + 8, ey, 4, worried ? 5 : 3);
-  ctx.fillStyle = '#111';
-  ctx.fillRect(ex + 1, ey + 1, 2, 2);
-  ctx.fillRect(ex + 9, ey + 1, 2, 2);
-  // whiskers
-  ctx.strokeStyle = '#f5d9b8'; ctx.lineWidth = 1;
-  ctx.beginPath();
-  ctx.moveTo(px + 2, py + 15); ctx.lineTo(px + 8, py + 15);
-  ctx.moveTo(px + 24, py + 15); ctx.lineTo(px + 30, py + 15);
-  ctx.stroke();
-  // paws
-  ctx.fillStyle = '#d1742c';
-  ctx.fillRect(px + 6 + step, py + 25, 6, 3);
-  ctx.fillRect(px + 20 - step, py + 25, 6, 3);
-  // tail
-  ctx.strokeStyle = '#d1742c'; ctx.lineWidth = 3;
-  ctx.beginPath();
-  ctx.moveTo(px + 26, py + 24);
-  ctx.quadraticCurveTo(px + 31, py + 22 + (step ? 3 : -2), px + 29, py + 14);
-  ctx.stroke();
-}
-
-function drawMouse(x, y, t) {
-  const m = G.mouse;
-  const now = performance.now();
-  const sunk = Math.max(0, Math.min(1, (m.stuckUntil - now) / 3000));
-  const px = x * CELL, py = y * CELL + sunk * 6;
-  const dying = G.state === State.DYING && Math.floor((now - G.dieT) / 100) % 2 === 0;
-  const scale = 1 - sunk * 0.45;
-  ctx.save();
-  if (dying) ctx.globalAlpha = 0.35;
-  ctx.translate(px + CELL / 2, py + CELL / 2);
-  ctx.scale(scale, scale);
-  ctx.translate(-CELL / 2, -CELL / 2);
-  // ears
-  ctx.fillStyle = '#f2a0b5';
-  ctx.beginPath(); ctx.arc(px + 10, py + 10, 6, 0, 7); ctx.fill();
-  ctx.beginPath(); ctx.arc(px + 22, py + 10, 6, 0, 7); ctx.fill();
-  // body
-  ctx.fillStyle = dying ? '#ff8a8a' : '#cfd4dc';
-  ctx.fillRect(px + 7, py + 12, 18, 15);
-  ctx.fillRect(px + 9, py + 9, 14, 8);
-  // face
-  ctx.fillStyle = '#111';
-  ctx.fillRect(px + 11, py + 12, 2, 3);
-  ctx.fillRect(px + 19, py + 12, 2, 3);
-  ctx.fillStyle = '#f2a0b5';
-  ctx.fillRect(px + 15, py + 16, 3, 2);
-  // tail
-  ctx.strokeStyle = '#cfd4dc'; ctx.lineWidth = 2;
-  const wig = Math.sin(t / 150) * 3;
-  ctx.beginPath();
-  ctx.moveTo(px + 25, py + 24);
-  ctx.quadraticCurveTo(px + 31, py + 26 + wig, px + 29, py + 30);
-  ctx.stroke();
-  ctx.restore();
-}
-
-function drawYarn(x, y, t) {
-  const px = x * CELL, py = y * CELL;
-  ctx.fillStyle = '#5aa7e8';
-  ctx.beginPath();
-  ctx.arc(px + CELL / 2, py + CELL / 2, 10, 0, Math.PI * 2);
-  ctx.fill();
-  ctx.strokeStyle = '#3b7fc0';
-  ctx.lineWidth = 2;
-  ctx.beginPath();
-  ctx.arc(px + CELL / 2, py + CELL / 2, 6, t / 200, t / 200 + 4);
-  ctx.stroke();
-  ctx.beginPath();
-  ctx.arc(px + CELL / 2, py + CELL / 2, 9, t / 260 + 1, t / 260 + 3.5);
-  ctx.stroke();
-}
-
 /* ---------- Input ---------- */
-const DIRS = { up: [0, -1], down: [0, 1], left: [-1, 0], right: [1, 0] };
+const DIRS = {
+  up: { x: 0, y: -1 }, down: { x: 0, y: 1 }, left: { x: -1, y: 0 }, right: { x: 1, y: 0 }
+};
+const KEYMAP = {
+  arrowup: 'up', w: 'up', arrowdown: 'down', s: 'down',
+  arrowleft: 'left', a: 'left', arrowright: 'right', d: 'right'
+};
 
 document.addEventListener('keydown', (e) => {
   const k = e.key.toLowerCase();
-  if (['arrowup', 'arrowdown', 'arrowleft', 'arrowright', ' '].includes(k)) e.preventDefault();
-  AudioSys.ensure();
-
-  if (G.state === State.TITLE) { if (k !== 'm') startFromTitle(); return; }
-  if (G.state === State.OVER) { if (k !== 'm') retryLevel(); return; }
-
-  if (k === 'p') { togglePause(); return; }
-  if (k === 'm') { toggleMute(); return; }
-  if (G.state !== State.PLAYING) return;
-
-  const dir = { arrowup: 'up', w: 'up', arrowdown: 'down', s: 'down', arrowleft: 'left', a: 'left', arrowright: 'right', d: 'right' }[k];
-  if (dir) tryMouseMove(...DIRS[dir]);
+  if (KEYMAP[k] || k === ' ') e.preventDefault();
+  Sfx.ensure();
+  if (k === 'm') { toggleSound(); return; }
+  if (G.state === 'unstarted' || G.state === 'over') {
+    if (k === ' ' || k === 'enter') newGame();
+    return;
+  }
+  if (k === 'p' || k === 'escape' || k === ' ') { togglePause(); return; }
+  const dir = KEYMAP[k];
+  if (!dir || G.state !== 'playing') return;
+  if (!e.repeat) {
+    G.heldDirs = G.heldDirs.filter(d => d !== dir);
+    G.heldDirs.push(dir);
+    tryMove(DIRS[dir].x, DIRS[dir].y);
+    G.lastMoveAt = performance.now();
+  }
+});
+document.addEventListener('keyup', (e) => {
+  const dir = KEYMAP[e.key.toLowerCase()];
+  if (dir) G.heldDirs = G.heldDirs.filter(d => d !== dir);
 });
 
-/* D-pad: hold to repeat */
-document.querySelectorAll('.pad-btn').forEach(btn => {
-  let rep = null;
-  const fire = () => tryMouseMove(...DIRS[btn.dataset.dir]);
-  const start = (e) => {
-    e.preventDefault();
-    AudioSys.ensure();
-    if (G.state === State.TITLE) { startFromTitle(); return; }
-    if (G.state === State.OVER) { retryLevel(); return; }
-    fire();
-    clearInterval(rep);
-    rep = setInterval(fire, 150);
-  };
-  const stop = () => clearInterval(rep);
-  btn.addEventListener('pointerdown', start);
-  btn.addEventListener('pointerup', stop);
-  btn.addEventListener('pointercancel', stop);
-  btn.addEventListener('pointerleave', stop);
-});
+function handleHeldInput(t) {
+  if (!G.heldDirs.length) return;
+  if (t - G.lastMoveAt >= INPUT_REPEAT_DELAY) {
+    const dir = G.heldDirs[G.heldDirs.length - 1];
+    tryMove(DIRS[dir].x, DIRS[dir].y);
+    G.lastMoveAt = t - (INPUT_REPEAT_DELAY - INPUT_REPEAT_RATE);
+  }
+}
 
-/* Swipe on the canvas */
+/* D-pad + swipe */
 let swipe = null;
 cv.addEventListener('pointerdown', (e) => {
-  AudioSys.ensure();
-  if (G.state === State.TITLE) { startFromTitle(); return; }
-  if (G.state === State.OVER) { retryLevel(); return; }
+  Sfx.ensure();
+  if (G.state === 'unstarted' || G.state === 'over') return;
   swipe = { x: e.clientX, y: e.clientY, done: false };
 });
 cv.addEventListener('pointermove', (e) => {
-  if (!swipe || swipe.done) return;
+  if (!swipe || swipe.done || G.state !== 'playing') return;
   const dx = e.clientX - swipe.x, dy = e.clientY - swipe.y;
   if (Math.abs(dx) < 24 && Math.abs(dy) < 24) return;
   swipe.done = true;
-  if (Math.abs(dx) > Math.abs(dy)) tryMouseMove(dx > 0 ? 1 : -1, 0);
-  else tryMouseMove(0, dy > 0 ? 1 : -1);
+  if (Math.abs(dx) > Math.abs(dy)) tryMove(dx > 0 ? 1 : -1, 0);
+  else tryMove(0, dy > 0 ? 1 : -1);
 });
 cv.addEventListener('pointerup', () => { swipe = null; });
 
-function startFromTitle() {
-  AudioSys.ensure();
-  AudioSys.ui();
-  startGame();
-}
+document.querySelectorAll('.pad-btn').forEach(btn => {
+  let rep = null;
+  const dir = btn.dataset.dir;
+  const fire = () => { if (G.state === 'playing') tryMove(DIRS[dir].x, DIRS[dir].y); };
+  btn.addEventListener('pointerdown', (e) => {
+    e.preventDefault(); Sfx.ensure();
+    if (G.state === 'unstarted' || G.state === 'over') return;
+    fire();
+    clearInterval(rep);
+    rep = setInterval(fire, INPUT_REPEAT_RATE + 50);
+  });
+  ['pointerup', 'pointercancel', 'pointerleave'].forEach(ev => btn.addEventListener(ev, () => clearInterval(rep)));
+});
 
+/* ---------- Flow / chrome ---------- */
+function newGame() {
+  Sfx.ensure(); Sfx.ui();
+  G.score = 0;
+  G.livesRemaining = 2;
+  closeDialogs();
+  loadLevel(G.level);
+  G.state = 'playing';
+  updateChrome();
+}
+function startAtLevel(n) {
+  G.level = Math.max(1, Math.min(50, n));
+  newGame();
+}
 function togglePause() {
-  if (G.state === State.PLAYING) setState(State.PAUSED);
-  else if (G.state === State.PAUSED) setState(State.PLAYING);
+  if (G.state === 'playing') G.state = 'paused';
+  else if (G.state === 'paused') G.state = 'playing';
+  updateChrome();
+  Sfx.ui();
 }
-function toggleMute() {
-  AudioSys.muted = !AudioSys.muted;
-  localStorage.setItem('rr_muted', AudioSys.muted ? '1' : '0');
-  $('btnMute').textContent = AudioSys.muted ? '🔇' : '🔊';
+function toggleSound() {
+  Sfx.muted = !Sfx.muted;
+  localStorage.setItem('rr_muted', Sfx.muted ? '1' : '0');
+  syncMenus();
+}
+function updateChrome() {
+  $('titleText').textContent = 'Rodent\'s Revenge [' + G.level + ']';
+  $('scoreVal').textContent = G.score;
+  $('startBanner').classList.toggle('hidden', G.state !== 'unstarted');
+  const lv = $('livesBox');
+  lv.innerHTML = '';
+  for (let i = 0; i < Math.max(0, G.livesRemaining); i++) {
+    const c = document.createElement('canvas');
+    c.width = 18; c.height = 14;
+    drawMouseIcon(c.getContext('2d'));
+    lv.appendChild(c);
+  }
+  syncMenus();
+}
+function syncMenus() {
+  $('miSound').textContent = (Sfx.muted ? '\u2610 ' : '\u2611 ') + 'Sound';
+  $('miPause').textContent = G.state === 'paused' ? 'Resume' : 'Pause';
 }
 
-/* Buttons */
-$('btnStart').addEventListener('click', startFromTitle);
-$('btnRetry').addEventListener('click', retryLevel);
-$('btnMenu').addEventListener('click', () => setState(State.TITLE));
-$('btnResume').addEventListener('click', () => setState(State.PLAYING));
-$('btnQuit').addEventListener('click', () => setState(State.TITLE));
-$('btnPause').addEventListener('click', togglePause);
-$('btnMute').addEventListener('click', toggleMute);
-$('btnRestart').addEventListener('click', () => { if (G.state !== State.TITLE) { G.lives = Math.max(1, G.lives); loadLevel(G.level); setState(State.PLAYING); } });
+/* ---------- Menus / dialogs (Win 3.1 style) ---------- */
+function closeMenus() {
+  document.querySelectorAll('.dropdown').forEach(d => d.classList.remove('open'));
+}
+document.querySelectorAll('.menu-item').forEach(mi => {
+  mi.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const dd = mi.parentElement.querySelector('.dropdown');
+    const was = dd.classList.contains('open');
+    closeMenus();
+    if (!was) dd.classList.add('open');
+    Sfx.ensure(); Sfx.ui();
+  });
+});
+document.addEventListener('click', () => closeMenus());
 
-$('lvlMinus').addEventListener('click', () => { G.startLevel = Math.max(1, G.startLevel - 1); $('lvlValue').textContent = G.startLevel; AudioSys.ensure(); AudioSys.ui(); });
-$('lvlPlus').addEventListener('click', () => { G.startLevel = Math.min(50, G.startLevel + 1); $('lvlValue').textContent = G.startLevel; AudioSys.ensure(); AudioSys.ui(); });
+let dialogResume = null;
+function openDialog(id) {
+  closeDialogs();
+  closeMenus();
+  if (G.state === 'playing') dialogResume = 'playing';
+  if (G.state === 'playing') G.state = 'paused';
+  $('dialogs').classList.remove('hidden');
+  $(id).classList.remove('hidden');
+}
+function closeDialogs() {
+  $('dialogs').classList.add('hidden');
+  document.querySelectorAll('.win-dialog').forEach(d => d.classList.add('hidden'));
+  if (dialogResume === 'playing' && G.state === 'paused') G.state = 'playing';
+  dialogResume = null;
+}
+
+$('miNew').addEventListener('click', () => { closeMenus(); newGame(); });
+$('miLevel').addEventListener('click', () => { closeMenus(); buildLevelPicker(); openDialog('dlgLevel'); });
+$('miPause').addEventListener('click', () => { closeMenus(); togglePause(); });
+$('miSound').addEventListener('click', () => { closeMenus(); toggleSound(); });
+$('miFull').addEventListener('click', () => {
+  closeMenus();
+  if (document.fullscreenElement) document.exitFullscreen();
+  else document.documentElement.requestFullscreen().catch(() => {});
+});
+$('miHow').addEventListener('click', () => { closeMenus(); openDialog('dlgHow'); });
+$('miAbout').addEventListener('click', () => { closeMenus(); openDialog('dlgAbout'); });
+$('miScores').addEventListener('click', () => { closeMenus(); buildScoreList(); openDialog('dlgScores'); });
+
+function buildLevelPicker() {
+  const box = $('levelGrid');
+  box.innerHTML = '';
+  for (let i = 1; i <= 50; i++) {
+    const b = document.createElement('button');
+    b.className = 'lvl-cell';
+    b.textContent = i;
+    b.addEventListener('click', () => { closeDialogs(); startAtLevel(i); });
+    box.appendChild(b);
+  }
+}
+function buildScoreList() {
+  const box = $('scoreList');
+  box.innerHTML = '';
+  let list = [];
+  try { list = JSON.parse(localStorage.getItem('rr_scores') || '[]'); } catch (e) {}
+  if (!list.length) {
+    box.innerHTML = '<div class="score-row muted">No games scored yet.</div>';
+    return;
+  }
+  list.forEach((s, i) => {
+    const d = document.createElement('div');
+    d.className = 'score-row';
+    d.innerHTML = '<span>' + (i + 1) + '.</span><span>' + s.score + '</span><span>Lvl ' + s.level + '</span><span>' + s.date + '</span>';
+    box.appendChild(d);
+  });
+}
+
+$('btnOverOk').addEventListener('click', () => {
+  closeDialogs();
+  G.state = 'unstarted';
+  loadLevel(G.level);
+  updateChrome();
+});
+$('dlgStartBtn').addEventListener('click', () => newGame());
+document.querySelectorAll('.dlg-close').forEach(b => b.addEventListener('click', closeDialogs));
+$('startBanner').addEventListener('click', (e) => {
+  if (G.state === 'unstarted') newGame();
+});
 
 document.addEventListener('visibilitychange', () => {
-  if (document.hidden && G.state === State.PLAYING) setState(State.PAUSED);
+  if (document.hidden && G.state === 'playing') { G.state = 'paused'; updateChrome(); }
 });
 
 /* Touch detection */
@@ -756,9 +753,293 @@ if ('ontouchstart' in window || navigator.maxTouchPoints > 0 || new URLSearchPar
   document.body.classList.add('touch');
 }
 
+/* ============================================================
+   RENDERING — Windows 16-colour VGA sprites, hand-recreated to
+   match original gameplay footage (docs/COMPARISON.md).
+   ============================================================ */
+function draw(t) {
+  ctx.fillStyle = PAL.olive;
+  ctx.fillRect(0, 0, W, H);
+  for (let y = 0; y < N; y++) {
+    for (let x = 0; x < N; x++) {
+      const px = x * TILE, py = y * TILE;
+      const tile = G.grid[idx(x, y)];
+      if (tile === T.WALL) drawWall(px, py);
+      else if (tile === T.BLOCK) drawBlock(px, py);
+      else if (tile === T.HOLE) drawHole(px, py);
+      else if (tile === T.TRAP) drawTrap(px, py);
+      else if (tile === T.CHEESE) drawCheese(px, py);
+    }
+  }
+  for (const c of G.cats) drawCat(c, t);
+  for (const g of G.yarns) if (g.status !== 'killed') drawYarn(g, t);
+  if (G.player.status !== 'killed') drawPlayer(t);
+  drawStopwatch();
+}
+
+/* Wall tile: teal brick with a bright cyan stepped-pyramid motif */
+function drawWall(px, py) {
+  ctx.fillStyle = PAL.teal;
+  ctx.fillRect(px, py, TILE, TILE);
+  ctx.fillStyle = PAL.black;
+  ctx.fillRect(px, py, TILE, 1); ctx.fillRect(px, py, 1, TILE);
+  const cx = px + TILE / 2, cy = py + TILE / 2;
+  ctx.fillStyle = PAL.cyan;
+  for (let i = 0; i < 3; i++) {
+    const half = (TILE / 2 - 3) - i * 6;
+    ctx.fillRect(cx - half, cy - half, half * 2, 2);
+    ctx.fillRect(cx - half, cy - half, 2, half * 2);
+    ctx.fillRect(cx - half, cy + half - 2, half * 2, 2);
+    ctx.fillRect(cx + half - 2, cy - half, 2, half * 2);
+  }
+  ctx.fillStyle = PAL.silver;
+  ctx.fillRect(cx - 3, cy - 3, 6, 6);
+  ctx.fillStyle = PAL.teal;
+  ctx.fillRect(cx - 1, cy - 1, 2, 2);
+}
+
+/* Movable block: green tile with lime bevel + inset ring + drop shadow */
+function drawBlock(px, py) {
+  ctx.fillStyle = PAL.gray;
+  ctx.fillRect(px + 3, py + 3, TILE - 3, TILE - 3);
+  ctx.fillStyle = PAL.green;
+  ctx.fillRect(px + 1, py + 1, TILE - 4, TILE - 4);
+  ctx.fillStyle = PAL.lime;
+  ctx.fillRect(px + 1, py + 1, TILE - 4, 3);
+  ctx.fillRect(px + 1, py + 1, 3, TILE - 4);
+  ctx.fillStyle = PAL.teal;
+  ctx.fillRect(px + TILE - 6, py + 4, 3, TILE - 7);
+  ctx.strokeStyle = PAL.black;
+  ctx.lineWidth = 2;
+  ctx.strokeRect(px + 5.5, py + 5.5, TILE - 13, TILE - 13);
+  ctx.fillStyle = PAL.lime;
+  const m = 10;
+  ctx.fillRect(px + m, py + m, 4, 4);
+  ctx.fillRect(px + TILE - m - 4, py + m, 4, 4);
+  ctx.fillRect(px + m, py + TILE - m - 4, 4, 4);
+  ctx.fillRect(px + TILE - m - 4, py + TILE - m - 4, 4, 4);
+}
+
+function drawHole(px, py) {
+  ctx.fillStyle = PAL.black;
+  ctx.beginPath();
+  ctx.ellipse(px + TILE / 2, py + TILE / 2, 13, 9, 0, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = PAL.gray;
+  ctx.lineWidth = 2;
+  ctx.stroke();
+}
+
+function drawTrap(px, py) {
+  ctx.fillStyle = PAL.gray;
+  ctx.fillRect(px + 4, py + 12, TILE - 8, TILE - 18);
+  ctx.fillStyle = PAL.silver;
+  ctx.fillRect(px + 4, py + 12, TILE - 8, 3);
+  ctx.strokeStyle = PAL.black;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(px + TILE / 2, py + TILE / 2 + 2, 10, Math.PI, 0);
+  ctx.stroke();
+  ctx.beginPath();
+  ctx.moveTo(px + TILE / 2 - 10, py + TILE / 2 + 2);
+  ctx.lineTo(px + TILE / 2 + 10, py + TILE / 2 + 2);
+  ctx.stroke();
+}
+
+function drawCheese(px, py) {
+  ctx.fillStyle = PAL.black;
+  ctx.beginPath();
+  ctx.moveTo(px + 5, py + 26); ctx.lineTo(px + 29, py + 26); ctx.lineTo(px + 29, py + 12);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = PAL.yellow;
+  ctx.beginPath();
+  ctx.moveTo(px + 6, py + 25); ctx.lineTo(px + 28, py + 25); ctx.lineTo(px + 28, py + 13);
+  ctx.closePath(); ctx.fill();
+  ctx.fillStyle = PAL.white;
+  ctx.fillRect(px + 24, py + 14, 4, 10);
+  ctx.fillStyle = PAL.olive;
+  ctx.beginPath(); ctx.arc(px + 17, py + 21, 2, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(px + 12, py + 23, 1.5, 0, 7); ctx.fill();
+}
+
+function drawYarn(g, t) {
+  const px = g.x * TILE, py = g.y * TILE;
+  if (g.status === 'waiting' && Math.floor(t / 120) % 2 === 0) return;   // idle blink
+  if (g.status === 'dying') {
+    const f = Math.floor((performance.now() - g.deathT) / 150);
+    ctx.strokeStyle = PAL.blue;
+    ctx.lineWidth = 3;
+    ctx.beginPath();
+    ctx.arc(px + TILE / 2, py + TILE / 2, 6 + f * 6, 0, Math.PI * 2);
+    ctx.stroke();
+    return;
+  }
+  ctx.fillStyle = PAL.blue;
+  ctx.beginPath();
+  ctx.arc(px + TILE / 2, py + TILE / 2, 12, 0, Math.PI * 2);
+  ctx.fill();
+  ctx.strokeStyle = PAL.cyan;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.arc(px + TILE / 2, py + TILE / 2, 8, t / 200, t / 200 + 3.6);
+  ctx.stroke();
+  ctx.fillStyle = PAL.white;
+  ctx.fillRect(px + TILE / 2 - 5, py + TILE / 2 - 6, 3, 3);
+}
+
+/* Cat sprite: yellow body, black outline, gray spots — 2-frame walk */
+function drawCat(c, t) {
+  const px = c.x * TILE, py = c.y * TILE;
+  const f = Math.floor(t / 300) % 2;
+  const waiting = c.status === 'waiting';
+  ctx.save();
+  if (waiting) {
+    ctx.translate(px + TILE / 2, py + TILE / 2);
+    ctx.scale(1, 0.88);
+    ctx.translate(-(px + TILE / 2), -(py + TILE / 2) - 2);
+  }
+  const X = px, Y = py;
+  ctx.fillStyle = PAL.black;
+  ctx.fillRect(X + 6, Y + 8, 22, 20);
+  ctx.fillStyle = PAL.yellow;
+  ctx.fillRect(X + 7, Y + 9, 20, 18);
+  ctx.fillStyle = PAL.black;
+  ctx.fillRect(X + 5, Y + 4, 24, 12);
+  ctx.beginPath(); ctx.moveTo(X + 6, Y + 6); ctx.lineTo(X + 10, Y); ctx.lineTo(X + 13, Y + 6); ctx.fill();
+  ctx.beginPath(); ctx.moveTo(X + 19, Y + 6); ctx.lineTo(X + 23, Y); ctx.lineTo(X + 26, Y + 6); ctx.fill();
+  ctx.fillStyle = PAL.yellow;
+  ctx.fillRect(X + 6, Y + 5, 22, 10);
+  ctx.fillStyle = PAL.gray;
+  ctx.fillRect(X + 9, Y + 12, 4, 3);
+  ctx.fillRect(X + 20, Y + 16, 5, 3);
+  const dx = Math.sign(G.player.x - c.x), dy = Math.sign(G.player.y - c.y);
+  ctx.fillStyle = waiting ? PAL.red : PAL.black;
+  ctx.fillRect(X + 10 + dx, Y + 8 + dy, 3, waiting ? 5 : 3);
+  ctx.fillRect(X + 19 + dx, Y + 8 + dy, 3, waiting ? 5 : 3);
+  ctx.fillStyle = PAL.black;
+  ctx.fillRect(X + 2, Y + 14, 4, 1);
+  ctx.fillRect(X + 26, Y + 14, 4, 1);
+  ctx.fillRect(X + 8 + f * 2, Y + 27, 4, 3);
+  ctx.fillRect(X + 20 - f * 2, Y + 27, 4, 3);
+  ctx.strokeStyle = PAL.black;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(X + 27, Y + 22);
+  ctx.quadraticCurveTo(X + 33, Y + 20 + (f ? 3 : -2), X + 31, Y + 12);
+  ctx.stroke();
+  ctx.restore();
+}
+
+/* Mouse sprite: silver body, black outline, gray shading */
+function drawPlayer(t) {
+  const p = G.player;
+  const px = p.x * TILE, py = p.y * TILE;
+  let scale = 1, sink = 0, alpha = 1;
+  if (p.status === 'stuck') { sink = 7; alpha = 0.75; }
+  if (p.status === 'dying') {
+    const f = Math.floor((performance.now() - p.deathT) / DEATH_FRAME_TIME);
+    alpha = (f % 2 === 0) ? 1 : 0.25;
+    scale = Math.max(0.25, 1 - f * 0.18);
+  }
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.translate(px + TILE / 2, py + TILE / 2 - sink);
+  ctx.scale(scale, scale);
+  ctx.translate(-TILE / 2, -TILE / 2);
+  const X = 0, Y = 0;                            // local tile coordinates
+  ctx.strokeStyle = PAL.black;
+  ctx.lineWidth = 2;
+  ctx.beginPath();
+  ctx.moveTo(X + 24, Y + 26);
+  ctx.quadraticCurveTo(X + 32, Y + 24, X + 30, Y + 14);
+  ctx.stroke();
+  ctx.fillStyle = PAL.black;
+  ctx.beginPath(); ctx.arc(X + 11, Y + 11, 6, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(X + 21, Y + 11, 6, 0, 7); ctx.fill();
+  ctx.fillStyle = PAL.silver;
+  ctx.beginPath(); ctx.arc(X + 11, Y + 11, 4, 0, 7); ctx.fill();
+  ctx.beginPath(); ctx.arc(X + 21, Y + 11, 4, 0, 7); ctx.fill();
+  ctx.fillStyle = PAL.black;
+  ctx.fillRect(X + 6, Y + 13, 20, 15);
+  ctx.fillStyle = PAL.silver;
+  ctx.fillRect(X + 7, Y + 14, 18, 13);
+  ctx.fillStyle = PAL.gray;
+  ctx.fillRect(X + 7, Y + 23, 18, 4);
+  ctx.fillStyle = PAL.black;
+  ctx.fillRect(X + 11, Y + 16, 2, 3);
+  ctx.fillRect(X + 19, Y + 16, 2, 3);
+  ctx.fillRect(X + 14, Y + 20, 4, 2);
+  ctx.fillRect(X + 4, Y + 20, 6, 1);
+  ctx.fillRect(X + 22, Y + 20, 6, 1);
+  ctx.restore();
+}
+
+function drawMouseIcon(c) {
+  c.fillStyle = PAL.black;
+  c.beginPath(); c.arc(5, 5, 3.4, 0, 7); c.fill();
+  c.beginPath(); c.arc(12, 5, 3.4, 0, 7); c.fill();
+  c.fillStyle = PAL.silver;
+  c.beginPath(); c.arc(5, 5, 2.2, 0, 7); c.fill();
+  c.beginPath(); c.arc(12, 5, 2.2, 0, 7); c.fill();
+  c.fillStyle = PAL.black;
+  c.fillRect(3, 7, 11, 6);
+  c.fillStyle = PAL.silver;
+  c.fillRect(4, 8, 9, 4);
+}
+
+/* The stopwatch from the original status bar: white face, red marks,
+   blue second hand and the blue target line. */
+function drawStopwatch() {
+  const c = $('clockCv');
+  const g = c.getContext('2d');
+  const S = c.width;
+  g.clearRect(0, 0, S, S);
+  const cx = S / 2, cy = S / 2 + 2, R = S / 2 - 4;
+  g.fillStyle = PAL.gray;
+  g.beginPath(); g.arc(cx, cy, R + 3, 0, 7); g.fill();
+  g.fillStyle = PAL.silver;
+  g.beginPath(); g.arc(cx, cy, R, 0, 7); g.fill();
+  g.fillRect(cx - 4, 0, 8, 5);
+  g.fillStyle = PAL.white;
+  g.beginPath(); g.arc(cx, cy, R - 3, 0, 7); g.fill();
+  for (let i = 0; i < CLOCK_POSITIONS; i++) {
+    const a = (i / CLOCK_POSITIONS) * Math.PI * 2 - Math.PI / 2;
+    g.strokeStyle = PAL.red;
+    g.lineWidth = 1;
+    g.beginPath();
+    g.moveTo(cx + Math.cos(a) * (R - 6), cy + Math.sin(a) * (R - 6));
+    g.lineTo(cx + Math.cos(a) * (R - 2), cy + Math.sin(a) * (R - 2));
+    g.stroke();
+  }
+  if (G.clock.target !== 0) {
+    const a = (G.clock.target / CLOCK_POSITIONS) * Math.PI * 2 - Math.PI / 2;
+    g.strokeStyle = PAL.blue;
+    g.lineWidth = 3;
+    g.beginPath();
+    g.moveTo(cx + Math.cos(a) * (R - 10), cy + Math.sin(a) * (R - 10));
+    g.lineTo(cx + Math.cos(a) * (R - 2), cy + Math.sin(a) * (R - 2));
+    g.stroke();
+  }
+  const secA = (G.clock.seconds / CLOCK_POSITIONS) * Math.PI * 2 - Math.PI / 2;
+  g.strokeStyle = PAL.blue;
+  g.lineWidth = 2;
+  g.beginPath();
+  g.moveTo(cx, cy);
+  g.lineTo(cx + Math.cos(secA) * (R - 8), cy + Math.sin(secA) * (R - 8));
+  g.stroke();
+  const minA = (G.clock.minutes / CLOCK_POSITIONS) * Math.PI * 2 - Math.PI / 2;
+  g.strokeStyle = PAL.black;
+  g.lineWidth = 2;
+  g.beginPath();
+  g.moveTo(cx, cy);
+  g.lineTo(cx + Math.cos(minA) * (R - 13), cy + Math.sin(minA) * (R - 13));
+  g.stroke();
+  g.fillStyle = PAL.black;
+  g.beginPath(); g.arc(cx, cy, 2, 0, 7); g.fill();
+}
+
 /* ---------- Boot ---------- */
-$('btnMute').textContent = AudioSys.muted ? '🔇' : '🔊';
-genLevel(1);                 // draw a board behind the title
-updateHud();
-showScreen('scrTitle');
+loadLevel(1);
+G.state = 'unstarted';
+updateChrome();
 requestAnimationFrame(frame);

@@ -1,86 +1,71 @@
-# 🐭 Rodent's Revenge — Android Edition
+# 🐭 Rodent's Revenge — faithful web & Android port
 
-A faithful, from-scratch reimplementation of the 1991 Microsoft Windows classic
-**Rodent's Revenge** (by Christopher Lee Fraley), rebuilt as an HTML5 game and
-packaged as an **installable Android app (PWA)**. Playable offline, installable
-from the browser, no store required.
+A port of the 1991 Microsoft Windows game **Rodent's Revenge** (designed by
+Christopher Lee Fraley) to modern browsers and Android, rebuilt to preserve the
+original's mechanics, level structure, presentation and feel — not to
+modernise them.
 
 **Play / install:** https://oakridge-rgb.github.io/rodents-revenge/
 
----
+## What this is
 
-## Why this game
+- The **original game's rules**: 23×23 board, 8-directional cat chase AI,
+  pin-all-cats-together round clears, chained block pushes, the 30-position
+  stopwatch with the blue spawn line, sink holes (10s), mouse traps, yarn
+  balls that leave a wall trail, 3 lives, centre respawn, level 51+ forever.
+- The **original presentation**: Windows 16-colour VGA palette (olive floor,
+  cyan pyramid walls, green blocks, yellow cats, silver mouse), Win 3.1
+  program-window chrome (blue title bar with `Rodent's Revenge [N]`,
+  **Game / Options / Help** menus, status strip with mouse-icon lives, the
+  stopwatch and the score), PC-speaker-style beeps.
+- The **original level structure**: levels 1–4 are authentic transcriptions of
+  the original layouts; levels 5–50 are deterministic reconstructions built
+  from the original's pattern vocabulary (see [FAITHFULNESS.md](FAITHFULNESS.md)
+  for exactly what is authentic, what is reconstructed, and what remains
+  uncertain — no fabricated "recovered" data).
 
-Rodent's Revenge shipped with Microsoft Entertainment Pack in 1991 and, unlike
-Solitaire or Minesweeper, it **never received an official or notable Android
-port** — 30+ years later it still only exists on Windows (original + a 2000s C++
-remake). This repo changes that: same rules, same feel, running on your phone.
+## Install on Android (1 minute, no APK)
 
-## How to install on Android (1 minute, no APK)
+1. Open **https://oakridge-rgb.github.io/rodents-revenge/** in Chrome.
+2. Menu **⋮ → Add to Home screen**.
+3. Launch **Rodent** from the app drawer — fullscreen, standalone, works
+   offline. High scores stay on the device.
 
-1. Open **https://oakridge-rgb.github.io/rodents-revenge/** in Chrome on your
-   Android phone.
-2. Tap the **⋮ menu → Add to Home screen** (or the inline **Install** banner).
-3. Launch **Rodent** from your home screen — it opens fullscreen, standalone,
-   works **offline** (service worker), and appears in your app drawer like any
-   native app.
+## Controls
 
-That's a real port path: GitHub Pages hosts it, the web app manifest + service
-worker make it an Android app. Your high score persists between sessions.
+- ⌨️ Arrows / WASD to move (hold to repeat) · **P** pause · **M** sound ·
+  Space start
+- 📱 Swipe on the board or hold the on-screen D-pad; fullscreen button on the
+  title bar
+- Menus: **Game → New Game / Choose Level (1–50) / Pause**,
+  **Options → Sound / Fullscreen**, **Help → How to Play / High Scores / About**
 
-## How to play
+## Quick rules
 
-You are the mouse. Every level is a walled arena filled with **crates** (pushable)
-and **stone** (fixed), and a pack of cats that hunt you.
+Push the green blocks to box every cat in on **all eight sides** — a pinned
+cat becomes cheese (+1), which you eat for +100. When every cat is pinned at
+once the round clears, the stopwatch winds up and drops the next batch of
+cats at the board's edge points; after the final wave (blue line reaches the
+end of the dial) you advance a level. Cats chase you every second, diagonals
+included. Sink holes trap you for 10 seconds while cats keep moving; traps
+snap; yarn balls fly and explode against walls — they also spawn *from* walls.
 
-| Action | Result |
-| --- | --- |
-| Push crates to **box a cat in on all 4 sides** | Cat turns into **cheese** (+250) |
-| Walk over cheese | **Eat it** (+50) |
-| Box in **every cat** | **Level clear** (+100 × level) |
-| Cat touches you | Lose a life (3 total) |
+## Repository layout
 
-Hazards grow with the levels: **sink holes** (stuck 3s — cats keep moving!),
-**mouse traps** (instant death), and from level 7 **flying yarn balls**
-(diagonal, bouncing, deadly). A **clock** in the HUD fills up every ~28 seconds
-and spawns an extra cat — more danger, more points.
-
-**Controls**
-
-- 📱 Touch: swipe on the board, or hold the on-screen D-pad (auto-repeats)
-- ⌨️ Keyboard: arrows / WASD · **P** pause · **M** mute
-- Start level selectable 1–50 on the title screen, like the original
-
-## Building a real APK (optional)
-
-The PWA is a complete Android app for daily use. If you want a sideloadable APK
-for distribution:
-
-```bash
-npm i -g @bubblewrap/cli
-bubblewrap init --manifest https://oakridge-rgb.github.io/rodents-revenge/manifest.webmanifest
-bubblewrap build          # produces app-release-signed.apk
+```
+index.html    program-window chrome, menus, dialogs
+style.css     Windows 3.1 look (VGA palette, beveled chrome)
+levels.js     authentic levels 1-4 + deterministic generator for 5-50
+game.js       engine (cat AI, clock, spawner, yarn, scoring, sprites)
+sw.js         offline cache
+docs/COMPARISON.md   every difference found between the v1 remake and the original
 ```
 
-(Bubblewrap wraps this exact site in a Trusted Web Activity — same code, APK
-container.) Any WebView wrapper (Capacitor, Cordova) works identically since
-the game has zero external dependencies.
+## Legal
 
-## Tech
-
-- Zero dependencies, zero build step: `index.html` + `style.css` + `game.js`
-- Canvas renderer with a crisp retro look, procedural levels (seeded per level —
-  layouts are deterministic), WebAudio synth sound effects (no audio files)
-- PWA: manifest + offline service worker + generated icon set (192/512/maskable)
-- Works in any modern browser; tested on Android Chrome (touch) and desktop
-
-## Fair-use note
-
-This is a **non-commercial fan tribute**. The original Rodent's Revenge game
-design is © 1991 Microsoft Corporation (designed by Christopher Lee Fraley).
-This repo contains **none** of the original code, art, or audio — everything
-here was written from scratch. The name is used to describe the homage.
-
-## License
-
-Code: MIT — see [LICENSE](LICENSE).
+Non-commercial fan port. Rodent's Revenge game design © 1991 Microsoft
+Corporation. This repository contains **no** original Microsoft code or
+artwork: all mechanics were re-derived from publicly documented behaviour and
+published reverse-engineering studies, and all sprites/sounds are hand-made
+recreations. Not affiliated with or endorsed by Microsoft. Code: MIT
+([LICENSE](LICENSE)).

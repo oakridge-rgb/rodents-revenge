@@ -3,11 +3,11 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
-<meta name="theme-color" content="#0a0a0a">
+<meta name="theme-color" content="#008080">
 <meta name="mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-capable" content="yes">
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-<meta name="description" content="Rodent's Revenge for Android — a faithful fan reimplementation of the 1991 Microsoft Windows classic. Trap the cats, eat the cheese.">
+<meta name="description" content="Rodent's Revenge — a faithful web and Android port of the 1991 Microsoft Windows game. Trap the cats, eat the cheese.">
 <title>Rodent's Revenge</title>
 <link rel="manifest" href="./manifest.webmanifest">
 <link rel="icon" href="./icons/icon-192.png">
@@ -17,86 +17,130 @@
 <body>
 <div id="app">
 
-  <header id="hud">
-    <div class="hud-left">
-      <div class="hud-item"><span class="hud-label">SCORE</span><span id="hudScore">0</span></div>
-      <div class="hud-item"><span class="hud-label">LEVEL</span><span id="hudLevel">1</span></div>
+  <!-- Windows 3.1 program window chrome -->
+  <div id="titlebar">
+    <span class="tb-glyph">—</span>
+    <span id="titleText">Rodent's Revenge [1]</span>
+    <span class="tb-glyph tb-right" id="btnFull" title="Fullscreen">□</span>
+  </div>
+
+  <div id="menubar">
+    <div class="menu">
+      <span class="menu-item">Game</span>
+      <div class="dropdown">
+        <button id="miNew">New Game</button>
+        <button id="miLevel">Choose Level…</button>
+        <button id="miPause">Pause</button>
+      </div>
     </div>
-    <div id="hudLives" class="hud-lives" title="Lives"></div>
-    <div class="hud-right">
-      <div class="hud-item"><span class="hud-label">CATS</span><span id="hudCats">0</span></div>
-      <div class="hud-item"><span class="hud-label">BEST</span><span id="hudBest">0</span></div>
+    <div class="menu">
+      <span class="menu-item">Options</span>
+      <div class="dropdown">
+        <button id="miSound">☑ Sound</button>
+        <button id="miFull">Fullscreen</button>
+      </div>
     </div>
-  </header>
-
-  <div id="clockbar"><div id="clockfill"></div></div>
-
-  <div id="stage">
-    <canvas id="game" width="768" height="512" aria-label="Rodent's Revenge game board"></canvas>
-
-    <div id="overlay" class="overlay">
-      <!-- TITLE -->
-      <div id="scrTitle" class="screen">
-        <h1 class="logo"><span class="logo-r">RODENT'S</span><span class="logo-b">REVENGE</span></h1>
-        <p class="tagline">Trap every cat. Eat the cheese. Survive.</p>
-        <div class="lvl-select">
-          <button id="lvlMinus" class="lvl-btn" aria-label="Start level down">−</button>
-          <div class="lvl-num">START LEVEL <span id="lvlValue">1</span></div>
-          <button id="lvlPlus" class="lvl-btn" aria-label="Start level up">+</button>
-        </div>
-        <button id="btnStart" class="big-btn">▶ &nbsp;PLAY</button>
-        <div class="howto">
-          <b>GOAL</b> — push the crates to wall every cat in on all four sides. A fully
-          boxed cat turns into cheese. Walk over cheese to eat it. When the last cat is
-          boxed, the level is yours.
-          <br><br>
-          <b>DANGER</b> — cats chase you. Sink holes trap you for 3 seconds. Mouse traps
-          snap. Yarn balls fly. Three lives, that's it.
-        </div>
-        <p class="credit">A fan reimplementation of the 1991 Windows classic by Christopher Lee Fraley</p>
-      </div>
-
-      <!-- LEVEL CLEAR -->
-      <div id="scrClear" class="screen hidden">
-        <h2 class="clear-title">LEVEL CLEAR!</h2>
-        <p id="clearBonus" class="clear-bonus">+1000</p>
-      </div>
-
-      <!-- GAME OVER -->
-      <div id="scrOver" class="screen hidden">
-        <h2 class="over-title">GAME OVER</h2>
-        <p class="over-score">SCORE <span id="overScore">0</span></p>
-        <p id="overBest" class="over-best">BEST 0</p>
-        <button id="btnRetry" class="big-btn">↻ &nbsp;TRY AGAIN</button>
-        <button id="btnMenu" class="link-btn">Back to title</button>
-      </div>
-
-      <!-- PAUSED -->
-      <div id="scrPause" class="screen hidden">
-        <h2 class="pause-title">PAUSED</h2>
-        <button id="btnResume" class="big-btn">▶ &nbsp;RESUME</button>
-        <button id="btnQuit" class="link-btn">Quit to title</button>
+    <div class="menu">
+      <span class="menu-item">Help</span>
+      <div class="dropdown">
+        <button id="miHow">How to Play…</button>
+        <button id="miScores">High Scores…</button>
+        <button id="miAbout">About…</button>
       </div>
     </div>
   </div>
 
-  <div id="toolbar">
-    <button id="btnPause" class="tool-btn" aria-label="Pause">⏸</button>
-    <button id="btnMute" class="tool-btn" aria-label="Mute">🔊</button>
-    <button id="btnRestart" class="tool-btn" aria-label="Restart level">↻</button>
-    <span id="modeNote"></span>
+  <div id="statusbar">
+    <div id="livesBox" title="Lives remaining"></div>
+    <canvas id="clockCv" width="44" height="44"></canvas>
+    <div id="scoreBox"><span id="scoreVal">0</span></div>
+  </div>
+
+  <div id="stage">
+    <canvas id="game" width="828" height="828" aria-label="Rodent's Revenge game board"></canvas>
+
+    <div id="startBanner" class="start-banner">
+      <div class="start-box">
+        <div class="start-title">Rodent's Revenge</div>
+        <div class="start-text">Press SPACE or tap to start</div>
+        <div class="start-text small">Game menu → Choose Level to start at levels 1–50</div>
+        <button id="dlgStartBtn" class="win-btn">Start</button>
+      </div>
+    </div>
+
+    <div id="dialogs" class="hidden">
+      <div id="dlgLevel" class="win-dialog hidden">
+        <div class="dlg-title">Choose Level</div>
+        <div class="dlg-body">
+          <div id="levelGrid"></div>
+        </div>
+        <div class="dlg-btns"><button class="win-btn dlg-close">Cancel</button></div>
+      </div>
+      <div id="dlgHow" class="win-dialog hidden">
+        <div class="dlg-title">How to Play</div>
+        <div class="dlg-body how">
+          <p><b>Goal:</b> trap every cat by pushing the green blocks so each cat is
+          blocked in on <b>all eight sides</b>. A pinned cat turns into cheese.
+          When <b>every cat on the board</b> is pinned at once, the round is clear —
+          the clock winds up and releases the next batch of cats. Survive all
+          spawn waves to advance to the next level.</p>
+          <p><b>You:</b> walk with the arrow keys / WASD (swipe or D-pad on touch
+          screens). Push single blocks or whole chains. Chain ends blocked by a
+          wall, trap or yarn cannot be pushed; a cat at the end of the chain
+          flees if it can.</p>
+          <p><b>Dangers:</b> cats eat you on contact (3 lives). Sink holes swallow
+          you for 10 seconds while cats keep moving. Mouse traps kill instantly.
+          Yarn balls fly diagonally and explode against walls and blocks.</p>
+          <p><b>Clock:</b> the stopwatch in the status bar sweeps once every 30
+          seconds. When its minute hand reaches the <b class="bluetext">blue line</b>,
+          more cats arrive and the line moves further out.</p>
+          <p><b>Scoring:</b> cheese +100 · pinned cat +1 · +1 for every 15 seconds
+          survived. Score carries across levels; high scores are kept on this
+          device.</p>
+        </div>
+        <div class="dlg-btns"><button class="win-btn dlg-close">OK</button></div>
+      </div>
+      <div id="dlgScores" class="win-dialog hidden">
+        <div class="dlg-title">High Scores</div>
+        <div class="dlg-body" id="scoreList"></div>
+        <div class="dlg-btns"><button class="win-btn dlg-close">OK</button></div>
+      </div>
+      <div id="dlgAbout" class="win-dialog hidden">
+        <div class="dlg-title">About Rodent's Revenge</div>
+        <div class="dlg-body how">
+          <p>A faithful fan port of <b>Rodent's Revenge</b> (Microsoft, 1991,
+          designed by Christopher Lee Fraley) for modern browsers and Android,
+          rebuilt from the original's documented mechanics, reverse-engineered
+          level data and gameplay footage.</p>
+          <p>No original Microsoft code or artwork is used. Not affiliated with
+          or endorsed by Microsoft. See the repository's FAITHFULNESS.md for
+          what is authentic, what is reconstructed, and what remains uncertain.</p>
+        </div>
+        <div class="dlg-btns"><button class="win-btn dlg-close">OK</button></div>
+      </div>
+      <div id="dlgOver" class="win-dialog hidden">
+        <div class="dlg-title">Game Over</div>
+        <div class="dlg-body">
+          <p style="text-align:center;font-size:15px;">Final score:
+          <b id="overScore" style="font-size:18px;">0</b><br>
+          <span class="muted">reached level <span id="overLevel">1</span> · best on this device: <span id="overBest">0</span></span></p>
+        </div>
+        <div class="dlg-btns"><button id="btnOverOk" class="win-btn">OK</button></div>
+      </div>
+    </div>
   </div>
 
   <div id="dpad" class="dpad">
     <button class="pad-btn pad-up" data-dir="up" aria-label="Up">▲</button>
     <button class="pad-btn pad-left" data-dir="left" aria-label="Left">◀</button>
-    <button class="pad-btn pad-right" data-dir="right" aria-label="Right">▶</button>
     <button class="pad-btn pad-down" data-dir="down" aria-label="Down">▼</button>
+    <button class="pad-btn pad-right" data-dir="right" aria-label="Right">▶</button>
   </div>
 
-  <footer id="foot">Swipe the board or use the pad &nbsp;·&nbsp; Keyboard: arrows / WASD, P pause, M mute</footer>
+  <footer id="foot">Arrows / WASD move · P pause · M sound · swipe or D-pad on touch screens</footer>
 </div>
 
+<script src="./levels.js"></script>
 <script src="./game.js"></script>
 <script>
 if ('serviceWorker' in navigator) {

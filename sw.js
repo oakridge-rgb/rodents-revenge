@@ -1,9 +1,10 @@
 /* Rodent's Revenge — offline service worker (cache-first) */
-const CACHE = 'rr-v1';
+const CACHE = 'rr-v2';
 const CORE = [
   './',
   './index.html',
   './style.css',
+  './levels.js',
   './game.js',
   './manifest.webmanifest',
   './icons/icon-192.png',

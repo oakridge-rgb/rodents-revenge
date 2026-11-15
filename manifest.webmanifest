@@ -1,14 +1,14 @@
 {
   "name": "Rodent's Revenge",
   "short_name": "Rodent",
-  "description": "Trap every cat. Eat the cheese. Survive. A fan reimplementation of the 1991 Windows classic, installable on Android.",
+  "description": "The 1991 Windows classic Rodent's Revenge ported to web and Android. Trap the cats, eat the cheese.",
   "id": "rodents-revenge",
   "start_url": "./index.html",
   "scope": "./",
   "display": "standalone",
   "orientation": "any",
-  "background_color": "#0a0a0f",
-  "theme_color": "#0a0a0f",
+  "background_color": "#008080",
+  "theme_color": "#008080",
   "categories": ["games"],
   "icons": [
     { "src": "./icons/icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any" },
